@@ -38,7 +38,7 @@ function bucketLabel(ts: number, interval: Interval): string {
 }
 
 export const demoAdapter: Adapter = {
-  metricSeries(metric: Metric, opts): MetricPoint[] {
+  async metricSeries(metric: Metric, opts): Promise<MetricPoint[]> {
     const rand = prng(hashKey(metric.key))
     const isPercent = metric.unit === 'percent'
     const base = isPercent ? 8 + rand() * 30 : 800 + rand() * 4000
@@ -66,7 +66,7 @@ export const demoAdapter: Adapter = {
     })
   },
 
-  funnel(steps: FunnelStep[], breakdown?: string): FunnelStepResult[] {
+  async funnel(steps: FunnelStep[], breakdown?: string): Promise<FunnelStepResult[]> {
     const rand = prng(hashKey(steps.map((s) => s.event).join('>') + (breakdown ?? '')))
     let count = Math.round(3000 + rand() * 3000)
     return steps.map((step, i) => {

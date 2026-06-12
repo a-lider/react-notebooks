@@ -16,7 +16,15 @@ interface StatProps {
  * <Stat> keeps them current when data refreshes.
  */
 export function Stat({ metric, format = 'number' }: StatProps) {
-  const { data, summary } = useMetric(metric, { compare: 'previous-period' })
+  const { data, summary, status } = useMetric(metric, { compare: 'previous-period' })
+
+  if (status !== 'ready') {
+    return (
+      <span className="text-muted-foreground" title={status === 'error' ? 'query failed' : 'loading'}>
+        {status === 'error' ? 'n/a' : '…'}
+      </span>
+    )
+  }
 
   if (format === 'percent-change') {
     const pct = summary.change * 100

@@ -19,9 +19,13 @@ export interface MetricDef {
   model: string
   agg: Aggregation
   unit?: Unit
+  /** SQL predicate over the model's rows, e.g. "event = 'signup'". */
+  where?: string
   /** For agg: 'ratio' — SQL predicates over the model. */
   num?: string
   den?: string
+  /** Column for distinct counting (defaults to user_id for unique/ratio). */
+  distinct?: string
   description?: string
   owners?: string[]
 }

@@ -8,13 +8,19 @@ interface FunnelProps {
 
 /** Step-by-step conversion. Bespoke viz — no chart library needed. */
 export function Funnel({ steps, breakdown }: FunnelProps) {
-  const results = useFunnel(steps, breakdown)
+  const { steps: results, status, error } = useFunnel(steps, breakdown)
 
   return (
     <figure className="rounded-xl border bg-card p-4">
       <figcaption className="mb-4 text-sm font-medium text-muted-foreground">
         Funnel{breakdown && <span className="ml-2 text-xs font-normal">breakdown: {breakdown}</span>}
       </figcaption>
+      {status === 'loading' && <div className="h-36 w-full animate-pulse rounded-md bg-muted/40" />}
+      {status === 'error' && (
+        <div className="flex h-36 w-full items-center justify-center rounded-md bg-muted/20 px-6 text-center text-xs text-muted-foreground">
+          {error}
+        </div>
+      )}
       <div className="flex items-end gap-3">
         {results.map((step, i) => (
           <div key={i} className="flex-1 space-y-1.5">

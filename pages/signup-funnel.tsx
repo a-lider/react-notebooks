@@ -1,6 +1,6 @@
 import { Page, Note, Stat, Mention } from '@/components/notebook'
-import { Funnel } from '@/components/analytics'
-import { signupConversion } from '@/metrics/growth'
+import { Funnel, Trend } from '@/components/analytics'
+import { signups, signupConversion } from '@/metrics/growth'
 
 export default function SignupFunnel() {
   return (
@@ -11,14 +11,18 @@ export default function SignupFunnel() {
 
       <Funnel
         steps={[
-          { event: '$pageview', url: '/signup' },
-          { event: 'signup_started' },
-          { event: 'signup_completed' },
+          { event: '$pageview', url: '/signup', label: 'Visited /signup' },
+          { event: 'signup', label: 'Signed up' },
+          { event: 'onboarding_completed', label: 'Onboarded' },
+          { event: 'trial_started', label: 'Trial started' },
+          { event: 'subscribed', label: 'Subscribed' },
         ]}
         breakdown="$browser"
       />
 
       <h2>Signups over time</h2>
+
+      <Trend metric={signups} interval="week" compare="previous-period" />
 
       <Note author="alex">The drop tracks the new pricing modal. Next: pull a replay sample of Chrome sessions that abandoned between steps 2 and 3.</Note>
 

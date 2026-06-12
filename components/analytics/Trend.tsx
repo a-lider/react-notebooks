@@ -19,7 +19,7 @@ interface TrendProps {
  * shape when adding new visualizations.
  */
 export function Trend({ metric, interval = 'day', compare = 'none' }: TrendProps) {
-  const { data } = useMetric(metric, { interval, compare })
+  const { data, status, error } = useMetric(metric, { interval, compare })
 
   const config: ChartConfig = {
     value: { label: metric.label, color: 'var(--chart-2)' },
@@ -34,6 +34,13 @@ export function Trend({ metric, interval = 'day', compare = 'none' }: TrendProps
         {metric.label}
         <span className="ml-2 text-xs font-normal">by {interval}</span>
       </figcaption>
+      {status === 'loading' && <div className="aspect-[2.4/1] w-full animate-pulse rounded-md bg-muted/40" />}
+      {status === 'error' && (
+        <div className="flex aspect-[2.4/1] w-full items-center justify-center rounded-md bg-muted/20 px-6 text-center text-xs text-muted-foreground">
+          {error}
+        </div>
+      )}
+      {status === 'ready' && (
       <ChartContainer config={config} className="aspect-[2.4/1] w-full">
         <LineChart data={data} margin={{ left: 0, right: 8, top: 4 }}>
           <CartesianGrid vertical={false} strokeDasharray="3 3" />
@@ -53,6 +60,7 @@ export function Trend({ metric, interval = 'day', compare = 'none' }: TrendProps
           )}
         </LineChart>
       </ChartContainer>
+      )}
     </figure>
   )
 }
