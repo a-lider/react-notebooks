@@ -9,9 +9,9 @@ export default function Welcome() {
 
       <p>
         Notebooks and dashboards here are plain JSX pages in <code>pages/</code>. Agents write
-        pages as code, this app renders them, and git reviews them. Hit Edit (top right) to
-        change text, add blocks or delete them — every action becomes a surgical patch to the
-        page's source file.
+        pages as code, this app renders them, and git reviews them. Click any text to edit —
+        changes autosave into the page's source file. Hover a block for the + and drag handles,
+        type / in an empty block for block types.
       </p>
 
       <Callout>

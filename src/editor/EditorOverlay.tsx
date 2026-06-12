@@ -1,18 +1,30 @@
 /**
- * Edit mode. Maps rendered blocks (direct children of the page's <article>)
- * to AST blocks by index, and turns UI actions into ops for the editor
- * server: replaceInner (text editing), insert (p / h2 / callout), delete.
+ * Always-on, Notion-style editing (dev only).
  *
- * No ids anywhere: DOM order == AST order == block index, the same
- * positional identity React itself uses. A hash guards staleness.
+ * - Click any text block → caret lands where you clicked; type away.
+ * - Autosave: 1s debounce after typing, deferred-HMR so the caret never
+ *   jumps; the HMR update flushes when the edit session ends.
+ * - Hover a block → [+] and [⠿] handles on the LEFT. + inserts below,
+ *   grip drags to reorder (blue drop indicator), grip click → Delete.
+ * - Type '/' in an empty block → block-type menu. Enter → new paragraph.
+ * - Click below the last block → new paragraph.
  *
- * Mounted with key={slug}, so per-page state resets by remounting.
+ * Blocks map to AST by index — DOM order == AST order, the positional
+ * identity React itself uses. No outlines, no edit mode: it's just a page.
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { Pencil, Plus, Trash2, Type, Heading2, Megaphone } from 'lucide-react'
-import { applyOp, fetchPage, StaleError, type EditOp, type PagePayload } from './api'
-import { makeEditable, normalizeInner, serializeInner } from './serialize'
+import { Plus, GripVertical, Trash2, Type, Heading2, Heading3, Megaphone } from 'lucide-react'
+import {
+  applyOp,
+  fetchPage,
+  flushPage,
+  StaleError,
+  type BlockKind,
+  type EditOp,
+  type PagePayload,
+} from './api'
+import { makeEditable, normalizeInner, serializeInner, unmakeEditable } from './serialize'
 
 interface Props {
   slug: string
@@ -25,22 +37,143 @@ interface EditSession {
   container: HTMLElement
   snapshot: string
   islands: string[]
-  committed: boolean
+  /** At least one deferred save happened — flush HMR on session end. */
+  saved: boolean
+  ended: boolean
 }
 
-const HOVER_OUTLINE = '2px solid color-mix(in oklab, var(--ring) 55%, transparent)'
-const EDIT_OUTLINE = '2px solid var(--ring)'
+type SaveStatus = 'saved' | 'editing' | 'saving'
+
+type Menu =
+  | { kind: 'insert'; afterIndex: number; x: number; y: number }
+  | { kind: 'slash'; index: number; x: number; y: number }
+  | { kind: 'grip'; index: number; x: number; y: number }
+
+interface Drag {
+  from: number
+  /** Gap index 0..n; gap k = before block k, gap n = end. */
+  gap: number
+  y: number
+  left: number
+  width: number
+}
+
+const BLOCK_KINDS: { kind: BlockKind; label: string; Icon: typeof Type; domTag: string }[] = [
+  { kind: 'p', label: 'Text', Icon: Type, domTag: 'p' },
+  { kind: 'h2', label: 'Heading 2', Icon: Heading2, domTag: 'h2' },
+  { kind: 'h3', label: 'Heading 3', Icon: Heading3, domTag: 'h3' },
+  { kind: 'callout', label: 'Callout', Icon: Megaphone, domTag: 'div' },
+]
+
+const PLACEHOLDER = "Type something, or press '/' for blocks"
 
 const articleOf = (main: HTMLElement): HTMLElement | null => main.querySelector('article')
 
 const blockElOf = (main: HTMLElement, index: number): HTMLElement | null =>
   (articleOf(main)?.children[index] as HTMLElement | undefined) ?? null
 
+/** Rendered DOM tag for a page-level JSX tag (for post-op DOM sync checks). */
+function domTagFor(tag: string): string {
+  if (tag === 'Note') return 'aside'
+  if (tag === 'Callout') return 'div'
+  return tag.toLowerCase()
+}
+
+function containerOf(el: HTMLElement): HTMLElement {
+  return el.hasAttribute('data-nb-children')
+    ? el
+    : (el.querySelector<HTMLElement>('[data-nb-children]') ?? el)
+}
+
+/** Where the caret sits relative to the editable container's content. */
+function caretInfo(container: HTMLElement): { empty: boolean; atStart: boolean; atEnd: boolean } {
+  const empty =
+    (container.textContent ?? '').replace(/\u00A0/g, ' ').trim() === '' &&
+    !container.querySelector('[data-ce-ix]')
+  const sel = window.getSelection()
+  if (!sel || sel.rangeCount === 0) return { empty, atStart: false, atEnd: false }
+  const r = sel.getRangeAt(0)
+  if (!r.collapsed || !container.contains(r.startContainer)) {
+    return { empty, atStart: false, atEnd: false }
+  }
+  const pre = document.createRange()
+  pre.selectNodeContents(container)
+  pre.setEnd(r.startContainer, r.startOffset)
+  const preFrag = pre.cloneContents()
+  const atStart = (preFrag.textContent ?? '').trim() === '' && !preFrag.querySelector('[data-ce-ix]')
+  const post = document.createRange()
+  post.selectNodeContents(container)
+  post.setStart(r.startContainer, r.startOffset)
+  const postFrag = post.cloneContents()
+  const atEnd = (postFrag.textContent ?? '').trim() === '' && !postFrag.querySelector('[data-ce-ix]')
+  return { empty, atStart, atEnd }
+}
+
+/** Place the caret at a text offset (island text counts; -1 = end). */
+function placeCaretAtTextOffset(container: HTMLElement, offset: number): void {
+  const sel = window.getSelection()
+  if (!sel) return
+  const range = document.createRange()
+  let placed = false
+  if (offset >= 0) {
+    let cum = 0
+    for (const node of Array.from(container.childNodes)) {
+      const len = (node.textContent ?? '').length
+      if (cum + len >= offset) {
+        if (node.nodeType === Node.TEXT_NODE) {
+          range.setStart(node, Math.min(Math.max(offset - cum, 0), len))
+        } else {
+          range.setStartAfter(node)
+        }
+        range.collapse(true)
+        placed = true
+        break
+      }
+      cum += len
+    }
+  }
+  if (!placed) {
+    range.selectNodeContents(container)
+    range.collapse(false)
+  }
+  sel.removeAllRanges()
+  sel.addRange(range)
+}
+
+function placeCaret(x: number, y: number, fallback: HTMLElement): void {
+  const doc = document as Document & {
+    caretRangeFromPoint?: (x: number, y: number) => Range | null
+    caretPositionFromPoint?: (x: number, y: number) => { offsetNode: Node; offset: number } | null
+  }
+  let range: Range | null = null
+  if (typeof doc.caretPositionFromPoint === 'function') {
+    const p = doc.caretPositionFromPoint(x, y)
+    if (p) {
+      range = document.createRange()
+      range.setStart(p.offsetNode, p.offset)
+      range.collapse(true)
+    }
+  } else if (typeof doc.caretRangeFromPoint === 'function') {
+    range = doc.caretRangeFromPoint(x, y)
+  }
+  if (!range) {
+    range = document.createRange()
+    range.selectNodeContents(fallback)
+    range.collapse(false)
+  }
+  const sel = window.getSelection()
+  if (sel) {
+    sel.removeAllRanges()
+    sel.addRange(range)
+  }
+}
+
 export default function EditorOverlay({ slug, main }: Props) {
   const [page, setPage] = useState<PagePayload | null>(null)
+  const [status, setStatus] = useState<SaveStatus>('saved')
   const [hovered, setHovered] = useState<number | null>(null)
-  const [editing, setEditing] = useState<number | null>(null)
-  const [menuOpen, setMenuOpen] = useState(false)
+  const [menu, setMenu] = useState<Menu | null>(null)
+  const [drag, setDrag] = useState<Drag | null>(null)
   const [toast, setToast] = useState<string | null>(null)
 
   const pageRef = useRef<PagePayload | null>(null)
@@ -49,7 +182,8 @@ export default function EditorOverlay({ slug, main }: Props) {
   }, [page])
 
   const sessionRef = useRef<EditSession | null>(null)
-  const pendingEditRef = useRef<number | null>(null)
+  const saveTimerRef = useRef<number | null>(null)
+  const pendingEditRef = useRef<{ index: number; domTag: string; caret?: number } | null>(null)
 
   const say = useCallback((msg: string) => {
     setToast(msg)
@@ -77,14 +211,28 @@ export default function EditorOverlay({ slug, main }: Props) {
     return !!a && !!pageRef.current && a.children.length === pageRef.current.blocks.length
   }, [main])
 
-  // ---- ops ----------------------------------------------------------------
-  const run = useCallback(
-    async (op: EditOp): Promise<PagePayload | undefined> => {
+  // ---- saving -------------------------------------------------------------
+  const save = useCallback(
+    async (op: EditOp, defer: boolean): Promise<PagePayload | undefined> => {
       const p = pageRef.current
       if (!p) return undefined
+      setStatus('saving')
       try {
-        const next = await applyOp(p.slug, p.hash, op)
+        let next: PagePayload
+        try {
+          next = await applyOp(p.slug, p.hash, op, defer)
+        } catch (e) {
+          // text autosaves are safe to retry once against the fresh hash;
+          // structural ops aren't (indexes may have shifted) — surface those
+          if (e instanceof StaleError && op.type === 'replaceInner') {
+            pageRef.current = e.payload
+            next = await applyOp(e.payload.slug, e.payload.hash, op, defer)
+          } else {
+            throw e
+          }
+        }
         setPage(next)
+        setStatus('saved')
         return next
       } catch (e) {
         if (e instanceof StaleError) {
@@ -93,99 +241,226 @@ export default function EditorOverlay({ slug, main }: Props) {
         } else {
           say(e instanceof Error ? e.message : String(e))
         }
+        setStatus('saved')
         return undefined
       }
     },
     [say]
   )
 
-  // ---- text editing -------------------------------------------------------
+  /** Serialize the live container and autosave if it differs from disk. */
+  const saveSession = useCallback(async (): Promise<void> => {
+    const s = sessionRef.current
+    const p = pageRef.current
+    const block = p?.blocks[s?.index ?? -1]
+    if (!s || s.ended || !p || !block?.inner) return
+    const text = serializeInner(s.container, s.islands)
+    if (text === normalizeInner(p.source.slice(block.inner.start, block.inner.end))) {
+      setStatus('saved')
+      return
+    }
+    const next = await save({ type: 'replaceInner', index: s.index, text }, true)
+    if (next) s.saved = true
+  }, [save])
+
+  const scheduleSave = useCallback(() => {
+    setStatus('editing')
+    if (saveTimerRef.current !== null) window.clearTimeout(saveTimerRef.current)
+    saveTimerRef.current = window.setTimeout(() => {
+      saveTimerRef.current = null
+      void saveSession()
+    }, 1000)
+  }, [saveSession])
+
+  // ---- edit sessions ------------------------------------------------------
   const endSession = useCallback(
-    (commit: boolean) => {
+    async (commit: boolean): Promise<void> => {
       const s = sessionRef.current
-      if (!s || s.committed) return
-      s.committed = true
-      const p = pageRef.current
-      const block = p?.blocks[s.index]
-
-      let text: string | null = null
-      if (commit && p && block?.inner) {
-        text = serializeInner(s.container, s.islands)
-        if (text === normalizeInner(p.source.slice(block.inner.start, block.inner.end))) {
-          text = null
-        }
+      if (!s || s.ended) return
+      if (saveTimerRef.current !== null) {
+        window.clearTimeout(saveTimerRef.current)
+        saveTimerRef.current = null
       }
-
-      // restore React-owned DOM before HMR re-renders it
-      s.container.innerHTML = s.snapshot
-      s.container.removeAttribute('contenteditable')
-      s.container.style.outline = ''
-      s.container.style.outlineOffset = ''
+      if (commit) await saveSession()
+      s.ended = true
       sessionRef.current = null
-      setEditing(null)
 
-      if (text !== null) void run({ type: 'replaceInner', index: s.index, text })
+      // restore React-owned DOM exactly as React last rendered it,
+      // then release the deferred HMR update to paint the saved content
+      s.container.innerHTML = s.snapshot
+      unmakeEditable(s.container)
+      if (s.saved) await flushPage(slug)
+      setStatus('saved')
     },
-    [run]
+    [saveSession, slug]
   )
 
+  const endSessionRef = useRef(endSession)
+  useEffect(() => {
+    endSessionRef.current = endSession
+  }, [endSession])
+
+  // commit any open session when the overlay unmounts (page switch)
+  useEffect(() => {
+    return () => {
+      void endSessionRef.current(true)
+    }
+  }, [])
+
   const startEdit = useCallback(
-    (index: number) => {
+    (index: number, at?: { x: number; y: number }) => {
       const p = pageRef.current
       const block = p?.blocks[index]
       const el = blockElOf(main, index)
-      if (!p || !block || !el || sessionRef.current) return
-      if (!block.editable || !block.inner) {
-        say(`<${block.tag}> isn't text-editable — edit it in your IDE`)
-        return
-      }
-      const container = el.hasAttribute('data-nb-children')
-        ? el
-        : (el.querySelector<HTMLElement>('[data-nb-children]') ?? el)
+      if (!p || !block || !el || sessionRef.current?.index === index) return
+      if (sessionRef.current) void endSessionRef.current(true)
+      if (!block.editable || !block.inner) return
+
+      const container = containerOf(el)
       const islands = block.elements.map((s) => p.source.slice(s.start, s.end))
       const snapshot = container.innerHTML
 
-      if (!makeEditable(container, block.elements.length)) {
+      if (!makeEditable(container, block.elements.length, PLACEHOLDER)) {
         say('This block renders differently than its source — edit it in your IDE')
         return
       }
-      container.style.outline = EDIT_OUTLINE
-      container.style.outlineOffset = '6px'
       container.focus()
+      if (at) placeCaret(at.x, at.y, container)
 
-      sessionRef.current = { index, container, snapshot, islands, committed: false }
-      setEditing(index)
-      setMenuOpen(false)
+      const session: EditSession = { index, container, snapshot, islands, saved: false, ended: false }
+      sessionRef.current = session
+      setHovered(index) // the handles follow the block being typed in
 
+      const onInput = () => {
+        if (session.ended) return
+        // '/' in an empty block opens the block menu
+        if (container.textContent === '/') {
+          if (saveTimerRef.current !== null) window.clearTimeout(saveTimerRef.current)
+          const r = container.getBoundingClientRect()
+          const mainRect = main.getBoundingClientRect()
+          setMenu({
+            kind: 'slash',
+            index,
+            x: r.left - mainRect.left,
+            y: r.bottom - mainRect.top + main.scrollTop + 6,
+          })
+          return
+        }
+        scheduleSave()
+      }
       const onKey = (e: KeyboardEvent) => {
-        if (e.key === 'Enter' && !e.shiftKey) {
-          e.preventDefault()
-          cleanup()
-          endSession(true)
+        if (session.ended) return
+        if (e.key === 'Enter') {
+          e.preventDefault() // newlines don't exist in JSX text — blocks are atomic
+          if (e.shiftKey) return
+          void (async () => {
+            await endSessionRef.current(true)
+            const next = await save({ type: 'insert', afterIndex: index, kind: 'p' }, false)
+            if (next) pendingEditRef.current = { index: index + 1, domTag: 'p' }
+          })()
         } else if (e.key === 'Escape') {
           e.preventDefault()
-          cleanup()
-          endSession(false)
+          setMenu(null)
+          void endSessionRef.current(true)
+        } else if (e.key === 'Backspace') {
+          const info = caretInfo(container)
+          const pp = pageRef.current
+          if (!pp) return
+          if (info.empty) {
+            // empty block → remove it, caret to the end of the previous block
+            e.preventDefault()
+            void (async () => {
+              await endSessionRef.current(false)
+              const prevIx = index - 1
+              const next = await save({ type: 'delete', index }, false)
+              const prev = next?.blocks[prevIx]
+              if (next && prev?.editable) {
+                pendingEditRef.current = { index: prevIx, domTag: domTagFor(prev.tag), caret: -1 }
+              }
+            })()
+          } else if (info.atStart) {
+            // caret at start → merge this block into the previous text block
+            const prevBlock = pp.blocks[index - 1]
+            const prevEl = blockElOf(main, index - 1)
+            if (!prevBlock?.editable || !prevEl) return
+            e.preventDefault()
+            const text = serializeInner(container, session.islands)
+            const junction = (containerOf(prevEl).textContent ?? '').length
+            void (async () => {
+              await endSessionRef.current(false)
+              const next = await save({ type: 'mergeUp', index, text }, false)
+              if (next) {
+                pendingEditRef.current = {
+                  index: index - 1,
+                  domTag: domTagFor(prevBlock.tag),
+                  caret: junction,
+                }
+              }
+            })()
+          }
+        } else if (e.key === 'Delete') {
+          // forward delete at the end → merge the next text block into this one
+          const info = caretInfo(container)
+          const pp = pageRef.current
+          const nextBlock = pp?.blocks[index + 1]
+          if (!info.atEnd || !nextBlock?.editable) return
+          e.preventDefault()
+          const prevText = serializeInner(container, session.islands)
+          const junction = (container.textContent ?? '').length
+          void (async () => {
+            await endSessionRef.current(false)
+            const next = await save({ type: 'mergeUp', index: index + 1, prevText }, false)
+            if (next && pp) {
+              pendingEditRef.current = {
+                index,
+                domTag: domTagFor(pp.blocks[index].tag),
+                caret: junction,
+              }
+            }
+          })()
         }
       }
       const onBlur = () => {
-        cleanup()
-        endSession(true)
+        // let menu clicks land before tearing the session down
+        window.setTimeout(() => {
+          if (!session.ended && sessionRef.current === session) {
+            const m = document.activeElement?.closest?.('[data-nb-ui]')
+            if (!m) void endSessionRef.current(true)
+          }
+        }, 0)
       }
-      const cleanup = () => {
-        container.removeEventListener('keydown', onKey)
-        container.removeEventListener('blur', onBlur)
-      }
+      container.addEventListener('input', onInput)
       container.addEventListener('keydown', onKey)
       container.addEventListener('blur', onBlur)
     },
-    [main, endSession, say]
+    [main, say, save, scheduleSave]
   )
 
-  // ---- hover + click tracking ---------------------------------------------
+  // auto-edit a freshly inserted block once HMR catches up
+  useEffect(() => {
+    if (!pendingEditRef.current || !page) return
+    const want = pendingEditRef.current
+    pendingEditRef.current = null
+    let tries = 0
+    const tick = () => {
+      const el = blockElOf(main, want.index)
+      if (domInSync() && el && el.tagName.toLowerCase() === want.domTag) {
+        startEdit(want.index)
+        const s = sessionRef.current
+        if (s && s.index === want.index && want.caret !== undefined) {
+          placeCaretAtTextOffset(s.container, want.caret)
+        }
+      } else if (++tries < 40) {
+        window.setTimeout(tick, 75)
+      }
+    }
+    window.setTimeout(tick, 50)
+  }, [page, startEdit, domInSync, main])
+
+  // ---- hover + click ------------------------------------------------------
   useEffect(() => {
     const indexAt = (target: HTMLElement): number | null => {
-      if (target.closest('[data-nb-toolbar]')) return null
+      if (target.closest('[data-nb-ui]')) return null
       const a = articleOf(main)
       if (!a || !domInSync()) return null
       let node: HTMLElement | null = target
@@ -194,182 +469,320 @@ export default function EditorOverlay({ slug, main }: Props) {
     }
 
     const onOver = (e: Event) => {
-      if (sessionRef.current || menuOpen) return
+      if (drag) return
       const target = e.target as HTMLElement
-      if (target.closest('[data-nb-toolbar]')) return
-      setHovered(indexAt(target))
+      if (target.closest('[data-nb-ui]')) return
+      const ix = indexAt(target)
+      if (ix !== null) setHovered(ix)
     }
     const onLeave = () => {
-      if (!sessionRef.current && !menuOpen) setHovered(null)
+      if (!drag && !menu) setHovered(null)
     }
-    const onClick = (e: Event) => {
-      if (sessionRef.current || menuOpen) return
-      const index = indexAt(e.target as HTMLElement)
-      if (index !== null && pageRef.current?.blocks[index]?.editable) startEdit(index)
+    const onScroll = () => {
+      if (!drag) setHovered(null)
+    }
+    const onClick = (e: MouseEvent) => {
+      if (drag) return
+      const target = e.target as HTMLElement
+      if (target.closest('[data-nb-ui]')) return
+      const p = pageRef.current
+      const a = articleOf(main)
+      if (!p || !a || !domInSync()) return
+
+      const ix = indexAt(target)
+      if (ix !== null) {
+        if (p.blocks[ix]?.editable && sessionRef.current?.index !== ix) {
+          startEdit(ix, { x: e.clientX, y: e.clientY })
+        }
+        return
+      }
+      // click below the last block → new paragraph (or focus a trailing empty one)
+      if ((target === a || target === main) && p.blocks.length > 0) {
+        const last = a.children[a.children.length - 1]
+        if (last && e.clientY > last.getBoundingClientRect().bottom && !sessionRef.current) {
+          const lastBlock = p.blocks[p.blocks.length - 1]
+          const lastIsEmptyText =
+            lastBlock.editable &&
+            lastBlock.inner &&
+            p.source.slice(lastBlock.inner.start, lastBlock.inner.end).trim() === ''
+          if (lastIsEmptyText) {
+            startEdit(lastBlock.index)
+            return
+          }
+          const after = p.blocks.length - 1
+          void save({ type: 'insert', afterIndex: after, kind: 'p' }, false).then((next) => {
+            if (next) pendingEditRef.current = { index: after + 1, domTag: 'p' }
+          })
+        }
+      }
     }
 
     main.addEventListener('mouseover', onOver)
     main.addEventListener('mouseleave', onLeave)
+    main.addEventListener('scroll', onScroll, { passive: true })
     main.addEventListener('click', onClick)
     return () => {
       main.removeEventListener('mouseover', onOver)
       main.removeEventListener('mouseleave', onLeave)
+      main.removeEventListener('scroll', onScroll)
       main.removeEventListener('click', onClick)
     }
-  }, [main, menuOpen, domInSync, startEdit])
+  }, [main, drag, menu, domInSync, startEdit, save])
 
-  // hover outline on the block element
+  // close menus on outside pointerdown
   useEffect(() => {
-    if (hovered === null || editing !== null) return
-    const el = blockElOf(main, hovered)
-    if (!el) return
-    el.style.outline = HOVER_OUTLINE
-    el.style.outlineOffset = '6px'
-    el.style.borderRadius = '4px'
-    return () => {
-      el.style.outline = ''
-      el.style.outlineOffset = ''
-      el.style.borderRadius = ''
+    if (!menu) return
+    const onDown = (e: Event) => {
+      if (!(e.target as HTMLElement).closest('[data-nb-ui]')) setMenu(null)
     }
-  }, [main, hovered, editing])
+    window.addEventListener('pointerdown', onDown)
+    return () => window.removeEventListener('pointerdown', onDown)
+  }, [menu])
 
-  // auto-edit a freshly inserted block once HMR catches up
-  useEffect(() => {
-    if (pendingEditRef.current === null || !page) return
-    const want = pendingEditRef.current
-    pendingEditRef.current = null
-    let tries = 0
-    const tick = () => {
-      if (domInSync()) {
-        startEdit(want)
-      } else if (++tries < 30) {
-        window.setTimeout(tick, 100)
+  // ---- drag to reorder ----------------------------------------------------
+  const beginDrag = useCallback(
+    (from: number, e: React.PointerEvent) => {
+      e.preventDefault()
+      const a = articleOf(main)
+      const p = pageRef.current
+      if (!a || !p || !domInSync()) return
+      void endSessionRef.current(true)
+      setMenu(null)
+
+      const mainRect = main.getBoundingClientRect()
+      const rects = Array.from(a.children).map((el) => {
+        const r = el.getBoundingClientRect()
+        return { top: r.top - mainRect.top + main.scrollTop, bottom: r.bottom - mainRect.top + main.scrollTop }
+      })
+      const articleRect = a.getBoundingClientRect()
+      const left = articleRect.left - mainRect.left
+      const width = articleRect.width
+      const n = rects.length
+
+      const gapY = (k: number): number => {
+        if (k === 0) return rects[0].top - 6
+        if (k === n) return rects[n - 1].bottom + 6
+        return (rects[k - 1].bottom + rects[k].top) / 2
       }
-    }
-    window.setTimeout(tick, 50)
-  }, [page, startEdit, domInSync])
+      const nearestGap = (y: number): number => {
+        let best = 0
+        let bestDist = Infinity
+        for (let k = 0; k <= n; k++) {
+          const d = Math.abs(gapY(k) - y)
+          if (d < bestDist) {
+            bestDist = d
+            best = k
+          }
+        }
+        return best
+      }
 
-  // ---- toolbar ------------------------------------------------------------
-  const current = hovered !== null && page ? page.blocks[hovered] : null
-  let pos: { top: number; left: number } | null = null
-  if (current && hovered !== null) {
+      const el = a.children[from] as HTMLElement
+      el.style.opacity = '0.35'
+      document.body.style.userSelect = 'none'
+      document.body.style.cursor = 'grabbing'
+      let current: Drag = { from, gap: from, y: gapY(from), left, width }
+      setDrag(current)
+
+      const toContentY = (clientY: number) => clientY - main.getBoundingClientRect().top + main.scrollTop
+
+      const onMove = (ev: PointerEvent) => {
+        const gap = nearestGap(toContentY(ev.clientY))
+        if (gap !== current.gap) {
+          current = { ...current, gap, y: gapY(gap) }
+          setDrag(current)
+        }
+      }
+      const onUp = () => {
+        window.removeEventListener('pointermove', onMove)
+        window.removeEventListener('pointerup', onUp)
+        el.style.opacity = ''
+        document.body.style.userSelect = ''
+        document.body.style.cursor = ''
+        setDrag(null)
+        setHovered(null)
+        const gap = current.gap
+        if (gap !== from && gap !== from + 1) {
+          void save({ type: 'move', from, before: gap < n ? gap : null }, false)
+        }
+      }
+      window.addEventListener('pointermove', onMove)
+      window.addEventListener('pointerup', onUp)
+    },
+    [main, domInSync, save]
+  )
+
+  // ---- menu actions -------------------------------------------------------
+  const insertKind = (afterIndex: number, kind: BlockKind, domTag: string) => {
+    setMenu(null)
+    setHovered(null)
+    void (async () => {
+      await endSessionRef.current(true)
+      const next = await save({ type: 'insert', afterIndex, kind }, false)
+      if (next) pendingEditRef.current = { index: afterIndex + 1, domTag }
+    })()
+  }
+
+  const slashPick = (index: number, kind: BlockKind, domTag: string) => {
+    setMenu(null)
+    void (async () => {
+      await endSessionRef.current(false) // discard the typed '/'
+      const next = await save({ type: 'replaceBlock', index, kind }, false)
+      if (next) pendingEditRef.current = { index, domTag }
+    })()
+  }
+
+  const deleteBlock = (index: number) => {
+    setMenu(null)
+    setHovered(null)
+    void (async () => {
+      await endSessionRef.current(true)
+      await save({ type: 'delete', index }, false)
+    })()
+  }
+
+  // ---- render -------------------------------------------------------------
+  let handles: { top: number; left: number } | null = null
+  if (hovered !== null && page && !drag) {
     const el = blockElOf(main, hovered)
     if (el) {
       const mainRect = main.getBoundingClientRect()
       const r = el.getBoundingClientRect()
-      pos = {
-        top: r.top - mainRect.top + main.scrollTop,
-        left: Math.min(r.right - mainRect.left + 14, main.clientWidth - 46),
+      handles = {
+        top: r.top - mainRect.top + main.scrollTop + 2,
+        left: r.left - mainRect.left - 52,
       }
     }
   }
 
-  const insert = (kind: 'p' | 'h2' | 'callout') => {
-    if (hovered === null) return
-    const after = hovered
-    setMenuOpen(false)
-    setHovered(null)
-    void run({ type: 'insert', afterIndex: after, kind }).then((next) => {
-      if (next) pendingEditRef.current = after + 1
-    })
+  const statusLabel: Record<SaveStatus, string> = {
+    saved: 'Saved',
+    editing: 'Editing…',
+    saving: 'Saving…',
   }
-
-  const remove = () => {
-    if (hovered === null) return
-    const index = hovered
-    setMenuOpen(false)
-    setHovered(null)
-    void run({ type: 'delete', index })
+  const statusDot: Record<SaveStatus, string> = {
+    saved: 'bg-emerald-500',
+    editing: 'bg-amber-500',
+    saving: 'bg-sky-500',
   }
 
   return createPortal(
     <>
-      {pos && editing === null && (
-        <div
-          data-nb-toolbar
-          className="absolute z-40 flex flex-col gap-0.5 rounded-lg border bg-popover p-0.5 shadow-md"
-          style={{ top: pos.top, left: pos.left }}
-        >
-          {current?.editable && (
-            <ToolButton
-              title="Edit text (or click the block)"
-              onClick={() => hovered !== null && startEdit(hovered)}
-            >
-              <Pencil className="size-3.5" />
-            </ToolButton>
-          )}
-          <ToolButton title="Add block below" onClick={() => setMenuOpen((v) => !v)}>
-            <Plus className="size-3.5" />
-          </ToolButton>
-          <ToolButton title="Delete block" onClick={remove}>
-            <Trash2 className="size-3.5 text-destructive" />
-          </ToolButton>
+      {/* save status — top right */}
+      <div
+        data-nb-ui
+        className="fixed right-4 top-4 z-50 flex items-center gap-1.5 rounded-full border bg-background/90 px-3 py-1 text-xs text-muted-foreground shadow-sm backdrop-blur"
+      >
+        <span className={`size-1.5 rounded-full ${statusDot[status]}`} />
+        {statusLabel[status]}
+      </div>
 
-          {menuOpen && (
-            <div className="absolute left-full top-0 ml-1 w-36 rounded-lg border bg-popover p-1 shadow-md">
-              <MenuItem icon={<Type className="size-3.5" />} label="Text" onClick={() => insert('p')} />
-              <MenuItem icon={<Heading2 className="size-3.5" />} label="Heading" onClick={() => insert('h2')} />
-              <MenuItem icon={<Megaphone className="size-3.5" />} label="Callout" onClick={() => insert('callout')} />
-            </div>
-          )}
+      {/* left-side handles */}
+      {handles && hovered !== null && (
+        <div
+          data-nb-ui
+          className="absolute z-40 flex items-center text-muted-foreground/70"
+          style={{ top: handles.top, left: handles.left }}
+        >
+          <button
+            title="Add block below"
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={(e) => {
+              const mainRect = main.getBoundingClientRect()
+              setMenu({
+                kind: 'insert',
+                afterIndex: hovered,
+                x: e.clientX - mainRect.left,
+                y: e.clientY - mainRect.top + main.scrollTop + 12,
+              })
+            }}
+            className="flex size-6 items-center justify-center rounded transition-colors hover:bg-accent hover:text-foreground"
+          >
+            <Plus className="size-4" />
+          </button>
+          <button
+            title="Drag to move · click for actions"
+            onPointerDown={(e) => beginDrag(hovered, e)}
+            onClick={(e) => {
+              const mainRect = main.getBoundingClientRect()
+              setMenu({
+                kind: 'grip',
+                index: hovered,
+                x: e.clientX - mainRect.left,
+                y: e.clientY - mainRect.top + main.scrollTop + 12,
+              })
+            }}
+            className="flex size-6 cursor-grab items-center justify-center rounded transition-colors hover:bg-accent hover:text-foreground active:cursor-grabbing"
+          >
+            <GripVertical className="size-4" />
+          </button>
         </div>
       )}
 
-      {editing !== null && (
-        <div className="pointer-events-none fixed bottom-4 left-1/2 z-50 -translate-x-1/2 rounded-full border bg-popover px-4 py-1.5 text-xs text-muted-foreground shadow-md">
-          Editing — <kbd className="font-semibold">Enter</kbd> to save ·{' '}
-          <kbd className="font-semibold">Esc</kbd> to cancel
+      {/* drop indicator */}
+      {drag && (
+        <div
+          data-nb-ui
+          className="pointer-events-none absolute z-40 h-[3px] rounded-full bg-blue-400"
+          style={{ top: drag.y, left: drag.left, width: drag.width }}
+        />
+      )}
+
+      {/* block-type menu (+ or slash) */}
+      {menu && menu.kind !== 'grip' && (
+        <div
+          data-nb-ui
+          className="absolute z-50 w-44 rounded-lg border bg-popover p-1 shadow-lg"
+          style={{ top: menu.y, left: menu.x }}
+        >
+          <div className="px-2 pb-1 pt-1 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+            Blocks
+          </div>
+          {BLOCK_KINDS.map(({ kind, label, Icon, domTag }) => (
+            <button
+              key={kind}
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() =>
+                menu.kind === 'insert'
+                  ? insertKind(menu.afterIndex, kind, domTag)
+                  : slashPick(menu.index, kind, domTag)
+              }
+              className="flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left text-sm transition-colors hover:bg-accent"
+            >
+              <Icon className="size-4 text-muted-foreground" />
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* grip menu */}
+      {menu && menu.kind === 'grip' && (
+        <div
+          data-nb-ui
+          className="absolute z-50 w-40 rounded-lg border bg-popover p-1 shadow-lg"
+          style={{ top: menu.y, left: menu.x }}
+        >
+          <button
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => deleteBlock(menu.index)}
+            className="flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left text-sm text-destructive transition-colors hover:bg-accent"
+          >
+            <Trash2 className="size-4" />
+            Delete
+          </button>
         </div>
       )}
 
       {toast && (
-        <div className="fixed bottom-4 left-1/2 z-50 -translate-x-1/2 rounded-full border bg-popover px-4 py-1.5 text-xs shadow-md">
+        <div
+          data-nb-ui
+          className="fixed bottom-4 left-1/2 z-50 -translate-x-1/2 rounded-full border bg-popover px-4 py-1.5 text-xs shadow-md"
+        >
           {toast}
         </div>
       )}
     </>,
     main
-  )
-}
-
-function ToolButton({
-  title,
-  onClick,
-  children,
-}: {
-  title: string
-  onClick: () => void
-  children: React.ReactNode
-}) {
-  return (
-    <button
-      title={title}
-      onMouseDown={(e) => e.preventDefault()}
-      onClick={onClick}
-      className="flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
-    >
-      {children}
-    </button>
-  )
-}
-
-function MenuItem({
-  icon,
-  label,
-  onClick,
-}: {
-  icon: React.ReactNode
-  label: string
-  onClick: () => void
-}) {
-  return (
-    <button
-      onMouseDown={(e) => e.preventDefault()}
-      onClick={onClick}
-      className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors hover:bg-accent"
-    >
-      {icon}
-      {label}
-    </button>
   )
 }

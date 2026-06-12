@@ -128,3 +128,15 @@
     @apply font-sans;
     }
 }
+
+/* notebook editor: seamless contenteditable + empty-block placeholder */
+[data-nb-editing] {
+  outline: none;
+  caret-color: var(--foreground);
+}
+[data-nb-editing]:empty::before {
+  content: attr(data-placeholder);
+  color: var(--muted-foreground);
+  opacity: 0.6;
+  pointer-events: none;
+}

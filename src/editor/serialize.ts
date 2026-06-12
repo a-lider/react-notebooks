@@ -12,7 +12,11 @@
  * child index and make them atomic. Returns false when the DOM doesn't
  * structurally match the JSX (the safe bail-out: don't edit).
  */
-export function makeEditable(container: HTMLElement, islandCount: number): boolean {
+export function makeEditable(
+  container: HTMLElement,
+  islandCount: number,
+  placeholder: string
+): boolean {
   const children = Array.from(container.children)
   if (children.length !== islandCount) return false
   children.forEach((child, i) => {
@@ -20,7 +24,15 @@ export function makeEditable(container: HTMLElement, islandCount: number): boole
     child.setAttribute('contenteditable', 'false')
   })
   container.setAttribute('contenteditable', 'true')
+  container.setAttribute('data-nb-editing', '')
+  container.setAttribute('data-placeholder', placeholder)
   return true
+}
+
+export function unmakeEditable(container: HTMLElement): void {
+  container.removeAttribute('contenteditable')
+  container.removeAttribute('data-nb-editing')
+  container.removeAttribute('data-placeholder')
 }
 
 function escapeJsxText(text: string): string {

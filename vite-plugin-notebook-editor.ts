@@ -4,7 +4,13 @@
  * the JSX source. Bytes outside the edited span never change.
  *
  *   GET  /__editor/page?slug=<slug>          → PagePayload
- *   POST /__editor/apply {slug, hash, op}    → PagePayload (fresh)
+ *   POST /__editor/apply {slug, hash, op, defer} → PagePayload (fresh)
+ *   POST /__editor/flush {slug}              → releases deferred HMR
+ *
+ * Autosave (`defer: true`) writes the file but suppresses its HMR update —
+ * otherwise every debounced save would re-render the block under the
+ * user's caret. When the edit session ends the client flushes, and the
+ * queued HMR update fires once.
  *
  * Ops are index-based: client block order == AST block order == DOM order
  * (the same positional identity React itself uses). The `hash` guards
@@ -46,10 +52,20 @@ export interface PagePayload {
   blocks: BlockInfo[]
 }
 
+export type BlockKind = 'p' | 'h2' | 'h3' | 'callout'
+
 export type EditOp =
   | { type: 'replaceInner'; index: number; text: string }
-  | { type: 'insert'; afterIndex: number; kind: 'p' | 'h2' | 'callout' }
+  | { type: 'insert'; afterIndex: number; kind: BlockKind }
+  | { type: 'replaceBlock'; index: number; kind: BlockKind }
   | { type: 'delete'; index: number }
+  | { type: 'move'; from: number; before: number | null }
+  /**
+   * Merge block[index] into block[index-1] (Backspace at start / Delete at
+   * end). `prevText`/`text` carry unsaved live content; omitted = use disk.
+   */
+  | { type: 'mergeUp'; index: number; text?: string; prevText?: string }
+  | { type: 'duplicate'; index: number }
 
 // ---------------------------------------------------------------------------
 // Page parsing
@@ -59,10 +75,12 @@ const TEXT_TAGS = new Set(['h1', 'h2', 'h3', 'h4', 'p', 'blockquote'])
 /** Components that render {children} inside a [data-nb-children] container. */
 const CONTAINER_COMPONENTS = new Set(['Note', 'Callout'])
 
-const SNIPPETS: Record<'p' | 'h2' | 'callout', string> = {
-  p: '<p>New paragraph — click to edit.</p>',
-  h2: '<h2>New heading</h2>',
-  callout: '<Callout>Something worth calling out.</Callout>',
+/** New blocks are empty; the editor opens them with a placeholder caret. */
+const SNIPPETS: Record<BlockKind, string> = {
+  p: '<p></p>',
+  h2: '<h2></h2>',
+  h3: '<h3></h3>',
+  callout: '<Callout></Callout>',
 }
 
 function hashSource(source: string): string {
@@ -137,6 +155,25 @@ function indentOf(source: string, pos: number): string {
   return m ? m[0] : ''
 }
 
+/** The block's full lines: [line start, end of last line incl. newline). */
+function blockLines(source: string, block: BlockInfo): Span {
+  const start = lineStartOf(source, block.span.start)
+  const lineEnd = source.indexOf('\n', block.span.end)
+  return { start, end: lineEnd === -1 ? source.length : lineEnd + 1 }
+}
+
+/** Extend block lines with one adjacent blank line (after, else before). */
+function blockLinesWithGap(source: string, block: BlockInfo): Span {
+  const { start, end } = blockLines(source, block)
+  const nextLineEnd = source.indexOf('\n', end)
+  if (nextLineEnd !== -1 && source.slice(end, nextLineEnd).trim() === '') {
+    return { start, end: nextLineEnd + 1 }
+  }
+  const prevLineStart = lineStartOf(source, start - 1)
+  if (source.slice(prevLineStart, start).trim() === '') return { start: prevLineStart, end }
+  return { start, end }
+}
+
 function applyOp(source: string, blocks: BlockInfo[], op: EditOp): string {
   if (op.type === 'replaceInner') {
     const block = blocks[op.index]
@@ -155,20 +192,69 @@ function applyOp(source: string, blocks: BlockInfo[], op: EditOp): string {
     return next
   }
 
-  // delete: remove the block's full lines plus one adjacent blank line
+  if (op.type === 'replaceBlock') {
+    const block = blocks[op.index]
+    if (!block) throw new Error(`no block at index ${op.index}`)
+    let next =
+      source.slice(0, block.span.start) + SNIPPETS[op.kind] + source.slice(block.span.end)
+    if (op.kind === 'callout') next = ensureNamedImport(next, 'Callout', '@/components/notebook')
+    return removeUnusedNamedImports(next)
+  }
+
+  if (op.type === 'move') {
+    const { from, before } = op
+    const block = blocks[from]
+    if (!block) throw new Error(`no block at index ${from}`)
+    if (before === from) return source
+    const lines = blockLines(source, block)
+    const chunk = source.slice(lines.start, lines.end)
+    const cut = blockLinesWithGap(source, block)
+
+    let at: number
+    let text: string
+    if (before === null) {
+      const last = blockLines(source, blocks[blocks.length - 1])
+      at = last.end
+      text = '\n' + chunk
+    } else {
+      const target = blocks[before]
+      if (!target) throw new Error(`no block at index ${before}`)
+      at = lineStartOf(source, target.span.start)
+      text = chunk + '\n'
+    }
+    if (at <= cut.start) {
+      return source.slice(0, at) + text + source.slice(at, cut.start) + source.slice(cut.end)
+    }
+    return source.slice(0, cut.start) + source.slice(cut.end, at) + text + source.slice(at)
+  }
+
+  if (op.type === 'duplicate') {
+    const block = blocks[op.index]
+    if (!block) throw new Error(`no block at index ${op.index}`)
+    const lines = blockLines(source, block)
+    const chunk = source.slice(lines.start, lines.end)
+    return source.slice(0, lines.end) + '\n' + chunk + source.slice(lines.end)
+  }
+
+  if (op.type === 'mergeUp') {
+    const block = blocks[op.index]
+    const prev = blocks[op.index - 1]
+    if (!block?.inner || !block.editable) throw new Error(`block ${op.index} is not mergeable`)
+    if (!prev?.inner || !prev.editable) throw new Error(`block ${op.index - 1} is not mergeable`)
+    const norm = (s: string) => s.replace(/\s+/g, ' ').trim()
+    const curText = op.text ?? norm(source.slice(block.inner.start, block.inner.end))
+    const prevText = op.prevText ?? norm(source.slice(prev.inner.start, prev.inner.end))
+    const merged = [prevText, curText].filter((t) => t !== '').join(' ')
+    const cut = blockLinesWithGap(source, block) // entirely after prev — splice order safe
+    const removed = source.slice(0, cut.start) + source.slice(cut.end)
+    return removed.slice(0, prev.inner.start) + merged + removed.slice(prev.inner.end)
+  }
+
+  // delete
   const block = blocks[op.index]
   if (!block) throw new Error(`no block at index ${op.index}`)
-  let from = lineStartOf(source, block.span.start)
-  const lineEnd = source.indexOf('\n', block.span.end)
-  let to = lineEnd === -1 ? source.length : lineEnd + 1
-  const nextLineEnd = source.indexOf('\n', to)
-  if (nextLineEnd !== -1 && source.slice(to, nextLineEnd).trim() === '') {
-    to = nextLineEnd + 1 // swallow the blank line after
-  } else {
-    const prevLineStart = lineStartOf(source, from - 1)
-    if (source.slice(prevLineStart, from).trim() === '') from = prevLineStart // …or before
-  }
-  return removeUnusedNamedImports(source.slice(0, from) + source.slice(to))
+  const cut = blockLinesWithGap(source, block)
+  return removeUnusedNamedImports(source.slice(0, cut.start) + source.slice(cut.end))
 }
 
 /** Add `name` to an existing named import from `from`, or add a new import. */
@@ -240,11 +326,25 @@ async function readBody(req: NodeJS.ReadableStream): Promise<string> {
   return Buffer.concat(chunks).toString('utf8')
 }
 
+const SUPPRESS_TTL_MS = 30_000
+
 export function notebookEditor(): Plugin {
+  /** Files whose HMR is deferred while an edit session autosaves into them. */
+  const suppressed = new Map<string, number>()
+  let devServer: ViteDevServer | null = null
+
   return {
     name: 'notebook-editor',
     apply: 'serve',
+
+    handleHotUpdate(ctx) {
+      const at = suppressed.get(ctx.file)
+      if (at !== undefined && Date.now() - at < SUPPRESS_TTL_MS) return []
+      suppressed.delete(ctx.file)
+    },
+
     configureServer(server: ViteDevServer) {
+      devServer = server
       const pagesDir = path.resolve(server.config.root, 'pages')
 
       const resolvePage = (slug: unknown): { slug: string; file: string } | null => {
@@ -253,10 +353,18 @@ export function notebookEditor(): Plugin {
         return file.startsWith(pagesDir + path.sep) ? { slug, file } : null
       }
 
+      const releaseHmr = async (file: string) => {
+        if (!suppressed.delete(file) || !devServer) return
+        for (const mod of devServer.moduleGraph.getModulesByFile(file) ?? []) {
+          await devServer.reloadModule(mod)
+        }
+      }
+
       server.middlewares.use('/__editor', (req, res) => {
         const respond = (status: number, data: unknown) => {
           res.statusCode = status
           res.setHeader('Content-Type', 'application/json')
+          res.setHeader('Cache-Control', 'no-store') // stale payloads break hash guards
           res.end(JSON.stringify(data))
         }
 
@@ -275,6 +383,7 @@ export function notebookEditor(): Plugin {
               slug?: string
               hash?: string
               op?: EditOp
+              defer?: boolean
             }
             const page = resolvePage(body.slug)
             if (!page || !body.op) return respond(400, { error: 'bad request' })
@@ -284,10 +393,22 @@ export function notebookEditor(): Plugin {
               return respond(409, { error: 'stale', payload: payloadFor(page.slug, page.file, source) })
             }
             const next = applyOp(source, extractBlocks(source), body.op)
+
+            if (body.defer) suppressed.set(page.file, Date.now())
+            else suppressed.delete(page.file)
+
             const tmp = page.file + '.tmp'
             await fs.writeFile(tmp, next, 'utf8')
             await fs.rename(tmp, page.file)
             return respond(200, payloadFor(page.slug, page.file, next))
+          }
+
+          if (req.method === 'POST' && url.pathname === '/flush') {
+            const body = JSON.parse(await readBody(req)) as { slug?: string }
+            const page = resolvePage(body.slug)
+            if (!page) return respond(400, { error: 'bad slug' })
+            await releaseHmr(page.file)
+            return respond(200, { ok: true })
           }
 
           respond(404, { error: 'not found' })
