@@ -1,6 +1,6 @@
 # react-notebooks
 
-Local-first analytics notebooks. Pages are plain JSX files, metrics are typed definitions, and everything — content, queries, charts — lives in your repo and runs on your machine.
+Local-first analytics notebooks. Pages are plain TSX files, charts are shadcn components, metrics are typed definitions. Everything lives in one repo and runs on your machine.
 
 ![Demo](docs/demo.gif)
 
