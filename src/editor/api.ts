@@ -20,6 +20,8 @@ export interface PagePayload {
   source: string
   hash: string
   blocks: BlockInfo[]
+  canUndo: boolean
+  canRedo: boolean
 }
 
 export type BlockKind = 'p' | 'h2' | 'h3' | 'callout'
@@ -82,4 +84,27 @@ export async function flushPage(slug: string): Promise<void> {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ slug }),
   })
+}
+
+export interface HistoryResult {
+  ok: boolean
+  reason?: 'empty' | 'stale'
+  payload: PagePayload
+  focusBlock?: number
+  label?: string
+}
+
+/**
+ * Step the workspace history (.notebooks/history/<slug>.json) one entry
+ * back or forward. The server validates the entry's hash against the file
+ * and declines (never rebases) when they diverge.
+ */
+export async function historyStep(slug: string, kind: 'undo' | 'redo'): Promise<HistoryResult> {
+  const res = await fetch(`/__editor/${kind}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ slug }),
+  })
+  if (!res.ok) throw new Error(`editor server: ${res.status}`)
+  return res.json() as Promise<HistoryResult>
 }

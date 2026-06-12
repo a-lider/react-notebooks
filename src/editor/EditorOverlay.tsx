@@ -28,6 +28,7 @@ import {
   applyOp,
   fetchPage,
   flushPage,
+  historyStep,
   StaleError,
   type BlockKind,
   type EditOp,
@@ -298,8 +299,10 @@ export default function EditorOverlay({ slug, main }: Props) {
 
       // restore React-owned DOM exactly as React last rendered it,
       // then release the deferred HMR update to paint the saved content
-      s.container.innerHTML = s.snapshot
-      unmakeEditable(s.container)
+      if (s.container.isConnected) {
+        s.container.innerHTML = s.snapshot
+        unmakeEditable(s.container)
+      }
       if (s.saved) await flushPage(slug)
       setStatus('saved')
     },
@@ -453,19 +456,26 @@ export default function EditorOverlay({ slug, main }: Props) {
     const want = pendingEditRef.current
     pendingEditRef.current = null
     let tries = 0
+    // require two consecutive stable reads: starting a session on DOM with
+    // in-flight HMR updates makes React's reconciliation fight our snapshot
+    let lastEl: HTMLElement | null = null
+    let lastText: string | null = null
     const tick = () => {
       const el = blockElOf(main, want.index)
-      if (domInSync() && el && el.tagName.toLowerCase() === want.domTag) {
+      const ok = domInSync() && !!el && el.tagName.toLowerCase() === want.domTag
+      if (ok && el === lastEl && el.textContent === lastText) {
         startEdit(want.index)
         const s = sessionRef.current
         if (s && s.index === want.index && want.caret !== undefined) {
           placeCaretAtTextOffset(s.container, want.caret)
         }
-      } else if (++tries < 40) {
-        window.setTimeout(tick, 75)
+        return
       }
+      lastEl = el
+      lastText = el?.textContent ?? null
+      if (++tries < 40) window.setTimeout(tick, 120)
     }
-    window.setTimeout(tick, 50)
+    window.setTimeout(tick, 60)
   }, [page, startEdit, domInSync, main])
 
   // ---- hover + click ------------------------------------------------------
@@ -556,6 +566,54 @@ export default function EditorOverlay({ slug, main }: Props) {
     window.addEventListener('pointerdown', onDown)
     return () => window.removeEventListener('pointerdown', onDown)
   }, [menu])
+
+  // ⌘Z / ⇧⌘Z / ⌘Y — undo/redo against the workspace history file.
+  // preventDefault unconditionally: the native contenteditable stack is
+  // poisoned by our island attrs / snapshot restores / HMR and must never fire.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey)) return
+      const k = e.key.toLowerCase()
+      const isUndo = k === 'z' && !e.shiftKey
+      const isRedo = (k === 'z' && e.shiftKey) || k === 'y'
+      if (!isUndo && !isRedo) return
+      e.preventDefault()
+      void (async () => {
+        await endSessionRef.current(true) // the live burst becomes the top entry
+        setSelected(null)
+        setMenu(null)
+        setStatus('saving')
+        try {
+          const res = await historyStep(slug, isUndo ? 'undo' : 'redo')
+          setPage(res.payload)
+          setStatus('saved')
+          if (!res.ok) {
+            say(
+              res.reason === 'stale'
+                ? 'History out of date — cleared'
+                : isUndo
+                  ? 'Nothing to undo'
+                  : 'Nothing to redo'
+            )
+            return
+          }
+          if (res.label === 'external') say(isUndo ? 'Undid agent edit' : 'Redid agent edit')
+          const block = res.focusBlock !== undefined ? res.payload.blocks[res.focusBlock] : undefined
+          if (block?.editable) {
+            pendingEditRef.current = { index: block.index, domTag: domTagFor(block.tag), caret: -1 }
+            setPage((p) => (p ? { ...p } : p)) // re-trigger the pending-edit effect
+          } else if (block) {
+            setSelected(block.index)
+          }
+        } catch (err) {
+          setStatus('saved')
+          say(err instanceof Error ? err.message : String(err))
+        }
+      })()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [slug, say])
 
   // keyboard actions on a selected (non-editable) block
   useEffect(() => {

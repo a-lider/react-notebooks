@@ -36,6 +36,12 @@ export class ErrorBoundary extends Component<Props, State> {
             <p className="mt-3 text-sm text-muted-foreground">
               Fix the page file and save — Vite will hot-reload it.
             </p>
+            <button
+              onClick={() => this.setState({ error: null })}
+              className="mt-3 rounded-md border px-3 py-1.5 text-sm font-medium transition-colors hover:bg-accent"
+            >
+              Try again
+            </button>
           </div>
         </div>
       )
