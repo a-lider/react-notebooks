@@ -33,3 +33,6 @@ snapshots/
 plans/
 # editor undo history
 .notebooks/
+
+# generated dataset — recreate with: python3 data/generate.py
+data/*.db
