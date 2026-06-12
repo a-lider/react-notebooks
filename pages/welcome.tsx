@@ -8,10 +8,11 @@ export default function Welcome() {
       <h1>Welcome to react-notebooks</h1>
 
       <p>
-        Notebooks and dashboards here are plain JSX pages in <code>pages/</code>. Agents write
-        pages as code, this app renders them, and git reviews them. Click any text to edit —
-        changes autosave into the page's source file. Hover a block for the + and drag handles,
-        type / in an empty block for block types.
+        Everything here is a plain JSX page in <code>pages/</code> — notebooks, dashboards,
+        reports are all just pages. Agents write pages as code, this app renders them, and git
+        reviews them. Click any text to edit — changes autosave into the page's source file.
+        Hover a block for the + and drag handles, type / in an empty block for block types, and
+        drag a block to the side of another to make columns.
       </p>
 
       <Callout>
@@ -33,7 +34,7 @@ export default function Welcome() {
       <h2>Where things live</h2>
 
       <ul>
-        <li><code>pages/</code> — notebooks; <code>pages/dashboards/</code> — dashboards</li>
+        <li><code>pages/</code> — all the pages; columns via Columns/Column when needed</li>
         <li><code>components/notebook</code> — Page, Note, Stat, Mention, Callout</li>
         <li><code>components/analytics</code> — Trend, Funnel, DataTable</li>
         <li><code>metrics/</code> + <code>models/</code> — the semantic layer</li>

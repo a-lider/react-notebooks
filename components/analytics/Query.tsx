@@ -95,6 +95,25 @@ function pageSlug(): string {
   return decodeURIComponent(location.pathname.replace(/^\//, ''))
 }
 
+/**
+ * Flat block index, mirroring the editor's depth-first traversal:
+ * top-level article children, with [data-nb-columns] wrappers transparent.
+ */
+function flatBlockIndex(article: Element, block: HTMLElement): number {
+  const flat: Element[] = []
+  for (const child of Array.from(article.children)) {
+    if (child.hasAttribute('data-nb-columns')) {
+      for (const col of Array.from(child.children)) {
+        if (!col.hasAttribute('data-nb-column')) continue
+        flat.push(...Array.from(col.children))
+      }
+    } else {
+      flat.push(child)
+    }
+  }
+  return flat.indexOf(block)
+}
+
 async function savePropToSource(
   root: HTMLElement,
   name: string,
@@ -104,8 +123,14 @@ async function savePropToSource(
   const article = root.closest('article')
   if (!article) throw new Error('not inside a page')
   let node: HTMLElement = root
-  while (node.parentElement && node.parentElement !== article) node = node.parentElement
-  const index = Array.prototype.indexOf.call(article.children, node)
+  while (
+    node.parentElement &&
+    node.parentElement !== article &&
+    !node.parentElement.hasAttribute('data-nb-column')
+  ) {
+    node = node.parentElement
+  }
+  const index = flatBlockIndex(article, node)
   if (index < 0) throw new Error('block not found')
 
   const slug = pageSlug()

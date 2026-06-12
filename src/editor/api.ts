@@ -12,6 +12,8 @@ export interface BlockInfo {
   inner: Span | null
   elements: Span[]
   editable: boolean
+  /** Span of the block's top-level unit (its Columns wrapper when inside one). */
+  top: Span
 }
 
 export interface PagePayload {
@@ -28,11 +30,12 @@ export type BlockKind = 'p' | 'h2' | 'h3' | 'callout' | 'sql'
 
 export type EditOp =
   | { type: 'replaceInner'; index: number; text: string }
-  | { type: 'insert'; afterIndex: number; kind: BlockKind }
+  | { type: 'insert'; afterIndex: number; kind: BlockKind; topLevel?: boolean }
   | { type: 'replaceBlock'; index: number; kind: BlockKind }
   | { type: 'delete'; index: number }
   | { type: 'move'; from: number; before: number | null }
   | { type: 'setProp'; index: number; name: string; value: string }
+  | { type: 'columnize'; from: number; target: number; side: 'left' | 'right' }
   | { type: 'mergeUp'; index: number; text?: string; prevText?: string }
   | { type: 'duplicate'; index: number }
 

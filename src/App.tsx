@@ -1,7 +1,7 @@
 import { lazy, Suspense, useEffect, useState } from 'react'
-import { NotebookText, LayoutDashboard } from 'lucide-react'
+import { NotebookText } from 'lucide-react'
 import { ScrollArea } from '@/components/ui/scroll-area'
-import { groups, pages } from './registry'
+import { pages } from './registry'
 import { ErrorBoundary } from './ErrorBoundary'
 
 // dev-only structured editor (vite-plugin-notebook-editor serves its API)
@@ -44,32 +44,25 @@ export default function App() {
           <span className="text-sm font-semibold tracking-tight">react-notebooks</span>
         </div>
         <ScrollArea className="flex-1 px-2">
-          {groups.map((group) => (
-            <div key={group} className="mb-4">
-              <div className="flex items-center gap-1.5 px-2 pb-1.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-                {group === 'Dashboards' && <LayoutDashboard className="size-3" />}
-                {group}
-              </div>
-              <nav className="space-y-0.5">
-                {pages
-                  .filter((p) => p.group === group)
-                  .map((p) => (
-                    <button
-                      key={p.slug}
-                      onClick={() => navigate(p.slug)}
-                      className={[
-                        'block w-full rounded-md px-2 py-1.5 text-left text-sm transition-colors',
-                        p.slug === current?.slug
-                          ? 'bg-sidebar-accent font-medium text-sidebar-accent-foreground'
-                          : 'text-muted-foreground hover:bg-sidebar-accent/60 hover:text-sidebar-foreground',
-                      ].join(' ')}
-                    >
-                      {p.title}
-                    </button>
-                  ))}
-              </nav>
-            </div>
-          ))}
+          <div className="flex items-center gap-1.5 px-2 pb-1.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+            Pages
+          </div>
+          <nav className="space-y-0.5">
+            {pages.map((p) => (
+              <button
+                key={p.slug}
+                onClick={() => navigate(p.slug)}
+                className={[
+                  'block w-full rounded-md px-2 py-1.5 text-left text-sm transition-colors',
+                  p.slug === current?.slug
+                    ? 'bg-sidebar-accent font-medium text-sidebar-accent-foreground'
+                    : 'text-muted-foreground hover:bg-sidebar-accent/60 hover:text-sidebar-foreground',
+                ].join(' ')}
+              >
+                {p.title}
+              </button>
+            ))}
+          </nav>
         </ScrollArea>
         <div className="border-t px-4 py-3 text-[11px] leading-5 text-muted-foreground">
           Pages are JSX files in <code className="font-mono">pages/</code>.

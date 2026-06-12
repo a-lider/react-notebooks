@@ -1,4 +1,4 @@
-import { Page, Note, Stat, Mention } from '@/components/notebook'
+import { Page, Note, Stat, Mention, Columns, Column } from '@/components/notebook'
 import { Funnel, Trend, Query } from '@/components/analytics'
 import { signups, signupConversion } from '@/metrics/growth'
 
@@ -26,11 +26,16 @@ export default function SignupFunnel() {
 
       <Note author="alex">The drop tracks the new pricing modal. Next: pull a replay sample of Chrome sessions that abandoned between steps 2 and 3.</Note>
 
-      <Query y="users" x="browser" chart="pie" sql={`SELECT browser, COUNT(DISTINCT user_id) AS users
+      <Columns>
+        <Column>
+          <Query y="users" x="browser" chart="pie" sql={`SELECT browser, COUNT(DISTINCT user_id) AS users
 FROM events WHERE event = 'signup'
 GROUP BY browser ORDER BY users DESC`} />
-
-      <p></p>
+        </Column>
+        <Column>
+          <p>Inside a column now.</p>
+        </Column>
+      </Columns>
 
       <h2>Titile</h2>
 

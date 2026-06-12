@@ -62,9 +62,10 @@ type Menu =
 
 interface Drag {
   from: number
-  /** Gap index 0..n; gap k = before block k, gap n = end. */
-  gap: number
-  y: number
+  /** A vertical gap between top-level units, or a side of a simple block. */
+  drop:
+    | { kind: 'gap'; gap: number; y: number }
+    | { kind: 'side'; unit: number; side: 'left' | 'right'; x: number; top: number; height: number }
   left: number
   width: number
 }
@@ -81,8 +82,43 @@ const PLACEHOLDER = "Type something, or press '/' for blocks"
 
 const articleOf = (main: HTMLElement): HTMLElement | null => main.querySelector('article')
 
+/**
+ * Flat DOM block list, mirroring the server's depth-first traversal:
+ * top-level article children, with [data-nb-columns] wrappers transparent —
+ * their [data-nb-column] children's blocks take the wrapper's place.
+ */
+function blockEls(main: HTMLElement): HTMLElement[] {
+  const a = articleOf(main)
+  if (!a) return []
+  const out: HTMLElement[] = []
+  for (const child of Array.from(a.children)) {
+    if (child.hasAttribute('data-nb-columns')) {
+      for (const col of Array.from(child.children)) {
+        if (!col.hasAttribute('data-nb-column')) continue
+        for (const inner of Array.from(col.children)) out.push(inner as HTMLElement)
+      }
+    } else {
+      out.push(child as HTMLElement)
+    }
+  }
+  return out
+}
+
 const blockElOf = (main: HTMLElement, index: number): HTMLElement | null =>
-  (articleOf(main)?.children[index] as HTMLElement | undefined) ?? null
+  blockEls(main)[index] ?? null
+
+/** Walk up from an event target to the containing block element, if any. */
+function blockElFromTarget(main: HTMLElement, target: HTMLElement): HTMLElement | null {
+  const a = articleOf(main)
+  if (!a || !a.contains(target)) return null
+  let node: HTMLElement = target
+  for (;;) {
+    const parent: HTMLElement | null = node.parentElement
+    if (!parent) return null
+    if (parent === a || parent.hasAttribute('data-nb-column')) return node
+    node = parent
+  }
+}
 
 /** Rendered DOM tag for a page-level JSX tag (for post-op DOM sync checks). */
 function domTagFor(tag: string): string {
@@ -223,8 +259,7 @@ export default function EditorOverlay({ slug, main }: Props) {
 
   /** DOM and AST agree? (False briefly while HMR applies a change.) */
   const domInSync = useCallback((): boolean => {
-    const a = articleOf(main)
-    return !!a && !!pageRef.current && a.children.length === pageRef.current.blocks.length
+    return !!pageRef.current && blockEls(main).length === pageRef.current.blocks.length
   }, [main])
 
   // refresh the payload after any HMR update (agent edits, Query self-saves)
@@ -505,11 +540,11 @@ export default function EditorOverlay({ slug, main }: Props) {
   useEffect(() => {
     const indexAt = (target: HTMLElement): number | null => {
       if (target.closest('[data-nb-ui]')) return null
-      const a = articleOf(main)
-      if (!a || !domInSync()) return null
-      let node: HTMLElement | null = target
-      while (node && node.parentElement !== a) node = node.parentElement
-      return node ? Array.prototype.indexOf.call(a.children, node) : null
+      if (!domInSync()) return null
+      const el = blockElFromTarget(main, target)
+      if (!el) return null
+      const ix = blockEls(main).indexOf(el)
+      return ix >= 0 ? ix : null
     }
 
     const onOver = (e: Event) => {
@@ -553,12 +588,15 @@ export default function EditorOverlay({ slug, main }: Props) {
         return
       }
       setSelected(null)
-      // click below the last block → new paragraph (or focus a trailing empty one)
+      // click below the last block → new full-width paragraph at the top
+      // level (or focus a trailing empty top-level one)
       if ((target === a || target === main) && p.blocks.length > 0) {
         const last = a.children[a.children.length - 1]
         if (last && e.clientY > last.getBoundingClientRect().bottom && !sessionRef.current) {
           const lastBlock = p.blocks[p.blocks.length - 1]
+          const lastIsTopLevel = lastBlock.top.start === lastBlock.span.start
           const lastIsEmptyText =
+            lastIsTopLevel &&
             lastBlock.editable &&
             lastBlock.inner &&
             p.source.slice(lastBlock.inner.start, lastBlock.inner.end).trim() === ''
@@ -567,9 +605,11 @@ export default function EditorOverlay({ slug, main }: Props) {
             return
           }
           const after = p.blocks.length - 1
-          void save({ type: 'insert', afterIndex: after, kind: 'p' }, false).then((next) => {
-            if (next) pendingEditRef.current = { index: after + 1, domTag: 'p' }
-          })
+          void save({ type: 'insert', afterIndex: after, kind: 'p', topLevel: true }, false).then(
+            (next) => {
+              if (next) pendingEditRef.current = { index: next.blocks.length - 1, domTag: 'p' }
+            }
+          )
         }
       }
     }
@@ -694,21 +734,51 @@ export default function EditorOverlay({ slug, main }: Props) {
       setSelected(null)
 
       const mainRect = main.getBoundingClientRect()
-      const rects = Array.from(a.children).map((el) => {
-        const r = el.getBoundingClientRect()
-        return { top: r.top - mainRect.top + main.scrollTop, bottom: r.bottom - mainRect.top + main.scrollTop }
+      const flat = blockEls(main)
+
+      // drag geometry works over TOP-LEVEL units: a unit is a simple block
+      // or a whole <Columns> wrapper (which occupies one row)
+      const units = Array.from(a.children).map((u) => {
+        const r = u.getBoundingClientRect()
+        const isWrapper = u.hasAttribute('data-nb-columns')
+        const firstBlock = isWrapper
+          ? (u.querySelector('[data-nb-column] > *') as HTMLElement | null)
+          : (u as HTMLElement)
+        return {
+          el: u as HTMLElement,
+          isWrapper,
+          /** flat index used as the `before` anchor for vertical drops */
+          flatIndex: firstBlock ? flat.indexOf(firstBlock) : -1,
+          top: r.top - mainRect.top + main.scrollTop,
+          bottom: r.bottom - mainRect.top + main.scrollTop,
+          left: r.left - mainRect.left,
+          right: r.right - mainRect.left,
+        }
       })
       const articleRect = a.getBoundingClientRect()
       const left = articleRect.left - mainRect.left
       const width = articleRect.width
-      const n = rects.length
+      const n = units.length
 
       const gapY = (k: number): number => {
-        if (k === 0) return rects[0].top - 6
-        if (k === n) return rects[n - 1].bottom + 6
-        return (rects[k - 1].bottom + rects[k].top) / 2
+        if (k === 0) return units[0].top - 6
+        if (k === n) return units[n - 1].bottom + 6
+        return (units[k - 1].bottom + units[k].top) / 2
       }
-      const nearestGap = (y: number): number => {
+      const dropAt = (x: number, y: number): Drag['drop'] => {
+        // side zones: near the left/right edge of a simple top-level block
+        for (let k = 0; k < n; k++) {
+          const u = units[k]
+          if (u.isWrapper || u.flatIndex === from) continue
+          if (y < u.top || y > u.bottom) continue
+          const edge = Math.max(48, (u.right - u.left) * 0.18)
+          if (x >= u.left - 24 && x < u.left + edge) {
+            return { kind: 'side', unit: k, side: 'left', x: u.left - 5, top: u.top, height: u.bottom - u.top }
+          }
+          if (x > u.right - edge && x <= u.right + 24) {
+            return { kind: 'side', unit: k, side: 'right', x: u.right + 2, top: u.top, height: u.bottom - u.top }
+          }
+        }
         let best = 0
         let bestDist = Infinity
         for (let k = 0; k <= n; k++) {
@@ -718,17 +788,23 @@ export default function EditorOverlay({ slug, main }: Props) {
             best = k
           }
         }
-        return best
+        return { kind: 'gap', gap: best, y: gapY(best) }
       }
 
-      const el = a.children[from] as HTMLElement
+      const el = flat[from]
+      if (!el) return
+      const fromUnit = units.findIndex((u) => u.el === el || u.el.contains(el))
+      const fromIsTopLevel = units[fromUnit] && !units[fromUnit].isWrapper
       const startX = e.clientX
       const startY = e.clientY
       // Notion-style: a click is not a drag — visuals only after real movement
       let active = false
-      let current: Drag = { from, gap: from, y: gapY(from), left, width }
+      let current: Drag = { from, drop: { kind: 'gap', gap: fromUnit, y: gapY(Math.max(fromUnit, 0)) }, left, width }
 
-      const toContentY = (clientY: number) => clientY - main.getBoundingClientRect().top + main.scrollTop
+      const toContent = (ev: PointerEvent) => {
+        const r = main.getBoundingClientRect()
+        return { x: ev.clientX - r.left, y: ev.clientY - r.top + main.scrollTop }
+      }
 
       const onMove = (ev: PointerEvent) => {
         if (!active) {
@@ -740,9 +816,10 @@ export default function EditorOverlay({ slug, main }: Props) {
           document.body.style.cursor = 'grabbing'
           setDrag(current)
         }
-        const gap = nearestGap(toContentY(ev.clientY))
-        if (gap !== current.gap) {
-          current = { ...current, gap, y: gapY(gap) }
+        const { x, y } = toContent(ev)
+        const drop = dropAt(x, y)
+        if (JSON.stringify(drop) !== JSON.stringify(current.drop)) {
+          current = { ...current, drop }
           setDrag(current)
         }
       }
@@ -755,10 +832,19 @@ export default function EditorOverlay({ slug, main }: Props) {
         document.body.style.cursor = ''
         setDrag(null)
         setHovered(null)
-        const gap = current.gap
-        if (gap !== from && gap !== from + 1) {
-          void save({ type: 'move', from, before: gap < n ? gap : null }, false)
+        const drop = current.drop
+        if (drop.kind === 'side') {
+          const target = units[drop.unit]?.flatIndex
+          if (target !== undefined && target >= 0 && target !== from) {
+            void save({ type: 'columnize', from, target, side: drop.side }, false)
+          }
+          return
         }
+        // vertical: no-op only when a top-level block lands beside itself
+        if (fromIsTopLevel && (drop.gap === fromUnit || drop.gap === fromUnit + 1)) return
+        const before = drop.gap < n ? units[drop.gap].flatIndex : null
+        if (before === -1) return
+        void save({ type: 'move', from, before }, false)
       }
       window.addEventListener('pointermove', onMove)
       window.addEventListener('pointerup', onUp)
@@ -919,12 +1005,19 @@ export default function EditorOverlay({ slug, main }: Props) {
         </div>
       )}
 
-      {/* drop indicator */}
-      {drag && (
+      {/* drop indicator: horizontal for gaps, vertical for column drops */}
+      {drag && drag.drop.kind === 'gap' && (
         <div
           data-nb-ui
           className="pointer-events-none absolute z-40 h-[3px] rounded-full bg-blue-400"
-          style={{ top: drag.y, left: drag.left, width: drag.width }}
+          style={{ top: drag.drop.y, left: drag.left, width: drag.width }}
+        />
+      )}
+      {drag && drag.drop.kind === 'side' && (
+        <div
+          data-nb-ui
+          className="pointer-events-none absolute z-40 w-[3px] rounded-full bg-blue-400"
+          style={{ top: drag.drop.top, left: drag.drop.x, height: drag.drop.height }}
         />
       )}
 

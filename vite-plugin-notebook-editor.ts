@@ -42,6 +42,11 @@ export interface BlockInfo {
   elements: Span[]
   /** Whether in-place text editing is supported for this block. */
   editable: boolean
+  /**
+   * Span of the block's top-level unit: itself, or the <Columns> wrapper it
+   * lives in. Top-level vertical moves anchor on this, never inside columns.
+   */
+  top: Span
 }
 
 export interface PagePayload {
@@ -58,12 +63,20 @@ export type BlockKind = 'p' | 'h2' | 'h3' | 'callout' | 'sql'
 
 export type EditOp =
   | { type: 'replaceInner'; index: number; text: string }
-  | { type: 'insert'; afterIndex: number; kind: BlockKind }
+  /**
+   * Insert after a block, at its own level — inside its column when it lives
+   * in one (Enter / + in a column stays in the column). With `topLevel`,
+   * insert after the block's whole unit at the top level instead (click
+   * below the page → full width, even when the last unit is a Columns).
+   */
+  | { type: 'insert'; afterIndex: number; kind: BlockKind; topLevel?: boolean }
   | { type: 'replaceBlock'; index: number; kind: BlockKind }
   | { type: 'delete'; index: number }
   | { type: 'move'; from: number; before: number | null }
   /** Set a component prop to a template-literal value (e.g. a Query's sql). */
   | { type: 'setProp'; index: number; name: string; value: string }
+  /** Drop a block beside another → wrap both in a 2-column layout. */
+  | { type: 'columnize'; from: number; target: number; side: 'left' | 'right' }
   /**
    * Merge block[index] into block[index-1] (Backspace at start / Delete at
    * end). `prevText`/`text` carry unsaved live content; omitted = use disk.
@@ -129,11 +142,37 @@ function findPageElement(ast: t.File): t.JSXElement | null {
   return null
 }
 
+/**
+ * Blocks are a depth-first flattening: top-level page children, with
+ * <Columns> wrappers transparent — their <Column> grandchildren's blocks
+ * take the wrapper's place in the sequence. The flat index stays the only
+ * identity; the same traversal order is mirrored client-side over the DOM.
+ */
+/** The flat element list in block order — single source of truth. */
+function elementsInBlockOrder(page: t.JSXElement): { el: t.JSXElement; top: t.JSXElement }[] {
+  const out: { el: t.JSXElement; top: t.JSXElement }[] = []
+  for (const child of page.children) {
+    if (child.type !== 'JSXElement') continue
+    if (jsxName(child) === 'Columns') {
+      for (const col of child.children) {
+        if (col.type !== 'JSXElement' || jsxName(col) !== 'Column') continue
+        for (const inner of col.children) {
+          if (inner.type === 'JSXElement') out.push({ el: inner, top: child })
+        }
+      }
+    } else {
+      out.push({ el: child, top: child })
+    }
+  }
+  return out
+}
+
 function extractBlocks(source: string): BlockInfo[] {
   const page = findPageElement(parseAst(source))
   if (!page) return []
-  const children = page.children.filter((c): c is t.JSXElement => c.type === 'JSXElement')
-  return children.map((el, index) => {
+  const out: BlockInfo[] = []
+
+  const push = (el: t.JSXElement, top: t.JSXElement) => {
     const tag = jsxName(el)
     const inner: Span | null = el.closingElement
       ? { start: el.openingElement.end!, end: el.closingElement.start! }
@@ -141,15 +180,19 @@ function extractBlocks(source: string): BlockInfo[] {
     const elements = el.children
       .filter((c): c is t.JSXElement => c.type === 'JSXElement')
       .map((c) => ({ start: c.start!, end: c.end! }))
-    return {
-      index,
+    out.push({
+      index: out.length,
       tag,
       span: { start: el.start!, end: el.end! },
       inner,
       elements,
       editable: inner !== null && (TEXT_TAGS.has(tag) || CONTAINER_COMPONENTS.has(tag)),
-    }
-  })
+      top: { start: top.start!, end: top.end! },
+    })
+  }
+
+  for (const { el, top } of elementsInBlockOrder(page)) push(el, top)
+  return out
 }
 
 // ---------------------------------------------------------------------------
@@ -171,6 +214,26 @@ function blockLines(source: string, block: BlockInfo): Span {
   const start = lineStartOf(source, block.span.start)
   const lineEnd = source.indexOf('\n', block.span.end)
   return { start, end: lineEnd === -1 ? source.length : lineEnd + 1 }
+}
+
+/** Like blockLines, but for an arbitrary span. */
+function spanLines(source: string, span: Span): Span {
+  const start = lineStartOf(source, span.start)
+  const lineEnd = source.indexOf('\n', span.end)
+  return { start, end: lineEnd === -1 ? source.length : lineEnd + 1 }
+}
+
+/** Shift a chunk of full lines from one indentation level to another. */
+function reindentChunk(chunk: string, oldIndent: string, newIndent: string): string {
+  if (oldIndent === newIndent) return chunk
+  return chunk
+    .split('\n')
+    .map((line) => {
+      if (line.trim() === '') return line
+      if (line.startsWith(oldIndent)) return newIndent + line.slice(oldIndent.length)
+      return line
+    })
+    .join('\n')
 }
 
 /** Extend block lines with one adjacent blank line (after, else before). */
@@ -195,9 +258,10 @@ function applyOp(source: string, blocks: BlockInfo[], op: EditOp): string {
   if (op.type === 'insert') {
     const block = blocks[op.afterIndex]
     if (!block) throw new Error(`no block at index ${op.afterIndex}`)
-    const indent = indentOf(source, block.span.start)
-    const lineEnd = source.indexOf('\n', block.span.end)
-    const at = lineEnd === -1 ? block.span.end : lineEnd
+    const anchor = op.topLevel ? block.top : block.span
+    const indent = indentOf(source, anchor.start)
+    const lineEnd = source.indexOf('\n', anchor.end)
+    const at = lineEnd === -1 ? anchor.end : lineEnd
     let next = source.slice(0, at) + `\n\n${indent}${SNIPPETS[op.kind]}` + source.slice(at)
     const imp = SNIPPET_IMPORTS[op.kind]
     if (imp) next = ensureNamedImport(next, imp.name, imp.from)
@@ -219,7 +283,7 @@ function applyOp(source: string, blocks: BlockInfo[], op: EditOp): string {
     // surgical, like every other op. Plain values become string attrs
     // (chart="bar"); multiline/awkward ones become template literals.
     const page = findPageElement(parseAst(source))
-    const el = page?.children.filter((c): c is t.JSXElement => c.type === 'JSXElement')[op.index]
+    const el = page ? elementsInBlockOrder(page)[op.index]?.el : undefined
     if (!el) throw new Error(`no block at index ${op.index}`)
     let literal: string
     if (/[\n"`\\]|\$\{/.test(op.value)) {
@@ -244,25 +308,74 @@ function applyOp(source: string, blocks: BlockInfo[], op: EditOp): string {
     if (!block) throw new Error(`no block at index ${from}`)
     if (before === from) return source
     const lines = blockLines(source, block)
-    const chunk = source.slice(lines.start, lines.end)
+    const fromIndent = indentOf(source, block.span.start)
     const cut = blockLinesWithGap(source, block)
 
+    // vertical moves land at the top level: anchor on the target's unit
+    // (its <Columns> wrapper when it lives in one), never inside a column
     let at: number
-    let text: string
+    let destIndent: string
     if (before === null) {
-      const last = blockLines(source, blocks[blocks.length - 1])
-      at = last.end
-      text = '\n' + chunk
+      const lastTop = spanLines(source, blocks[blocks.length - 1].top)
+      at = lastTop.end
+      destIndent = indentOf(source, blocks[blocks.length - 1].top.start)
     } else {
       const target = blocks[before]
       if (!target) throw new Error(`no block at index ${before}`)
-      at = lineStartOf(source, target.span.start)
-      text = chunk + '\n'
+      at = lineStartOf(source, target.top.start)
+      destIndent = indentOf(source, target.top.start)
     }
+    const chunk = reindentChunk(source.slice(lines.start, lines.end), fromIndent, destIndent)
+    const text = before === null ? '\n' + chunk : chunk + '\n'
     if (at <= cut.start) {
       return source.slice(0, at) + text + source.slice(at, cut.start) + source.slice(cut.end)
     }
+    if (at < cut.end) return source // anchor inside the cut — degenerate, no-op
     return source.slice(0, cut.start) + source.slice(cut.end, at) + text + source.slice(at)
+  }
+
+  if (op.type === 'columnize') {
+    const fromB = blocks[op.from]
+    const targetB = blocks[op.target]
+    if (!fromB || !targetB) throw new Error('bad columnize indexes')
+    if (op.from === op.target) return source
+    if (targetB.top.start !== targetB.span.start) {
+      throw new Error('columnize target must be a top-level block')
+    }
+    const indent = indentOf(source, targetB.span.start)
+    const colIndent = indent + '  '
+    const innerIndent = colIndent + '  '
+
+    const fromLines = blockLines(source, fromB)
+    const fromChunk = reindentChunk(
+      source.slice(fromLines.start, fromLines.end),
+      indentOf(source, fromB.span.start),
+      innerIndent
+    )
+    const cut = blockLinesWithGap(source, fromB)
+    const targetLines = blockLines(source, targetB)
+    const targetChunk = reindentChunk(
+      source.slice(targetLines.start, targetLines.end),
+      indent,
+      innerIndent
+    )
+
+    const [left, right] = op.side === 'left' ? [fromChunk, targetChunk] : [targetChunk, fromChunk]
+    const wrapper =
+      `${indent}<Columns>\n` +
+      `${colIndent}<Column>\n${left}${colIndent}</Column>\n` +
+      `${colIndent}<Column>\n${right}${colIndent}</Column>\n` +
+      `${indent}</Columns>\n`
+
+    const edits = [
+      { start: targetLines.start, end: targetLines.end, text: wrapper },
+      { start: cut.start, end: cut.end, text: '' },
+    ].sort((a, b) => b.start - a.start)
+    let next = source
+    for (const e of edits) next = next.slice(0, e.start) + e.text + next.slice(e.end)
+    next = ensureNamedImport(next, 'Columns', '@/components/notebook')
+    next = ensureNamedImport(next, 'Column', '@/components/notebook')
+    return next
   }
 
   if (op.type === 'duplicate') {
@@ -292,6 +405,66 @@ function applyOp(source: string, blocks: BlockInfo[], op: EditOp): string {
   if (!block) throw new Error(`no block at index ${op.index}`)
   const cut = blockLinesWithGap(source, block)
   return removeUnusedNamedImports(source.slice(0, cut.start) + source.slice(cut.end))
+}
+
+/**
+ * Notion-style column hygiene: drop empty <Column>s, unwrap a <Columns>
+ * that has fewer than two columns left, remove empty wrappers entirely.
+ * Runs after every structural op; iterates until stable.
+ */
+function normalizeColumns(source: string): string {
+  for (let pass = 0; pass < 10; pass++) {
+    const page = findPageElement(parseAst(source))
+    if (!page) return source
+    let edited = false
+
+    for (const child of page.children) {
+      if (child.type !== 'JSXElement' || jsxName(child) !== 'Columns') continue
+      const cols = child.children.filter(
+        (c): c is t.JSXElement => c.type === 'JSXElement' && jsxName(c) === 'Column'
+      )
+      const wrapperSpan: Span = { start: child.start!, end: child.end! }
+      const wrapperLines = spanLines(source, wrapperSpan)
+      const wrapperIndent = indentOf(source, child.start!)
+
+      const emptyCol = cols.find(
+        (c) => !c.children.some((cc) => cc.type === 'JSXElement')
+      )
+      if (emptyCol) {
+        const lines = spanLines(source, { start: emptyCol.start!, end: emptyCol.end! })
+        source = source.slice(0, lines.start) + source.slice(lines.end)
+        edited = true
+        break
+      }
+      if (cols.length === 0) {
+        // only remove a wrapper that is truly empty — never drop stray
+        // non-Column content an agent may have written inside
+        if (!child.children.some((c) => c.type === 'JSXElement')) {
+          source = source.slice(0, wrapperLines.start) + source.slice(wrapperLines.end)
+          edited = true
+          break
+        }
+        continue
+      }
+      if (cols.length === 1) {
+        // unwrap: the surviving column's blocks return to the top level
+        const blocksIn = cols[0].children.filter((c): c is t.JSXElement => c.type === 'JSXElement')
+        const chunks = blocksIn.map((b) => {
+          const lines = spanLines(source, { start: b.start!, end: b.end! })
+          return reindentChunk(
+            source.slice(lines.start, lines.end),
+            indentOf(source, b.start!),
+            wrapperIndent
+          )
+        })
+        source = source.slice(0, wrapperLines.start) + chunks.join('\n') + source.slice(wrapperLines.end)
+        edited = true
+        break
+      }
+    }
+    if (!edited) return source
+  }
+  return source
 }
 
 /** Add `name` to an existing named import from `from`, or add a new import. */
@@ -420,6 +593,8 @@ function focusBlockFor(op: EditOp): number {
       return op.afterIndex
     case 'move':
       return op.from
+    case 'columnize':
+      return op.target
     case 'mergeUp':
       return op.index - 1
     default:
@@ -611,7 +786,12 @@ export function notebookEditor(): Plugin {
               const h = await readHistory(historyFileFor(page.slug))
               return respond(409, { error: 'stale', payload: payloadFor(page.slug, page.file, source, h) })
             }
-            const next = applyOp(source, extractBlocks(source), body.op)
+            let next = applyOp(source, extractBlocks(source), body.op)
+            // structural ops can empty a column — keep the layout tidy
+            if (body.op.type !== 'replaceInner' && body.op.type !== 'setProp') {
+              const normalized = normalizeColumns(next)
+              if (normalized !== next) next = removeUnusedNamedImports(normalized)
+            }
 
             if (body.defer) suppressed.set(page.file, Date.now())
             else suppressed.delete(page.file)

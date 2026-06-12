@@ -1,12 +1,14 @@
 # Analytics workspace — agent guide
 
-This is a Vite + React 19 app. Notebooks and dashboards are JSX pages in `pages/`.
-Run `npm run dev` to render; run `npm run check` (tsc + eslint) before every commit.
+This is a Vite + React 19 app. All content — notebooks, dashboards, reports —
+is just JSX pages in `pages/`. Run `npm run dev` to render; run `npm run check`
+(tsc + eslint) before every commit.
 
 ## Layout
 
-- `pages/`      — notebooks & dashboards. One default-exported component per file.
-                  Dashboards live in `pages/dashboards/`.
+- `pages/`      — the pages. One default-exported component per file. There is
+                  no notebook/dashboard distinction — a "dashboard" is simply a
+                  page with more charts and columns.
 - `components/` — building blocks. `ui/` is shadcn (regenerate, don't hand-edit);
                   `notebook/` and `analytics/` are ours — read them before writing pages.
 - `metrics/`    — the semantic layer. Pages import metrics; never inline SQL in a page.
@@ -32,6 +34,26 @@ Imports use the `@/` alias, which points at the repo root: `@/components/noteboo
    `data/events.db` (generate with `python3 data/generate.py`; `models/*.sql`
    are available as views).
 5. Keep props literal. Extract anything computed into the component or metric.
+6. Content is one column by default. For side-by-side layout, wrap blocks in
+   `Columns`/`Column` (from `@/components/notebook`) — one `Column` per stack:
+
+   ```jsx
+   <Columns>
+     <Column>
+       <h3>Conversion</h3>
+       <Trend metric={signupConversion} interval="week" />
+     </Column>
+     <Column>
+       <h3>Signups</h3>
+       <Trend metric={signups} interval="week" />
+     </Column>
+   </Columns>
+   ```
+
+   Two or three columns at most; top level only (never nest Columns); don't
+   force columns — single column is the default and usually right. The editor
+   also creates these when a block is dragged to the side of another, and
+   dissolves a Columns when only one column remains.
 
 ## Editing an existing page
 
