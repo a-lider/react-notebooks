@@ -25,3 +25,6 @@ dist-ssr
 
 # query result cache — data never lives in pages
 lib/cache/
+
+# editor/agent screenshots for visual checks
+snapshots/
