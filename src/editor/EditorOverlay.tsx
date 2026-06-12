@@ -528,8 +528,12 @@ export default function EditorOverlay({ slug, main }: Props) {
       if (drag) return
       const target = e.target as HTMLElement
       if (target.closest('[data-nb-ui]')) return
-      // interactive component regions (e.g. the SQL editor) own their clicks
-      if (target.closest('[data-nb-interactive]')) return
+      // interactive component regions (e.g. the SQL editor) own their clicks —
+      // and taking focus there means the block selection must drop
+      if (target.closest('[data-nb-interactive]')) {
+        setSelected(null)
+        return
+      }
       const p = pageRef.current
       const a = articleOf(main)
       if (!p || !a || !domInSync()) return
@@ -646,6 +650,15 @@ export default function EditorOverlay({ slug, main }: Props) {
     if (selected === null) return
     const onKey = (e: KeyboardEvent) => {
       if (sessionRef.current) return
+      // keystrokes belong to whatever is being typed in, never to selection
+      const t = e.target as HTMLElement
+      if (
+        t.closest?.('[data-nb-interactive]') ||
+        /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName) ||
+        t.isContentEditable
+      ) {
+        return
+      }
       if (e.key === 'Backspace' || e.key === 'Delete') {
         e.preventDefault()
         const index = selected
@@ -655,8 +668,16 @@ export default function EditorOverlay({ slug, main }: Props) {
         setSelected(null)
       }
     }
+    // focus moving into an interactive region also drops the selection
+    const onFocusIn = (e: FocusEvent) => {
+      if ((e.target as HTMLElement).closest?.('[data-nb-interactive]')) setSelected(null)
+    }
     window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
+    window.addEventListener('focusin', onFocusIn)
+    return () => {
+      window.removeEventListener('keydown', onKey)
+      window.removeEventListener('focusin', onFocusIn)
+    }
   }, [selected, save])
 
   // ---- drag to reorder ----------------------------------------------------

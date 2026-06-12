@@ -28,7 +28,7 @@ export default function SignupFunnel() {
 
       <p></p>
 
-      <Query x="browser" chart="bar" sql={`SELECT browser, COUNT(DISTINCT user_id) AS users
+      <Query y="users" x="browser" chart="bar" sql={`SELECT browser, COUNT(DISTINCT user_id) AS users
 FROM events WHERE event = 'signup'
 GROUP BY browser ORDER BY users DESC`} />
     </Page>
