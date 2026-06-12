@@ -2,7 +2,8 @@ import type { ReactNode } from 'react'
 
 interface CalloutProps {
   variant?: 'info' | 'warning'
-  children: ReactNode
+  /** Optional: the editor creates empty blocks that fill in later. */
+  children?: ReactNode
 }
 
 export function Callout({ variant = 'info', children }: CalloutProps) {

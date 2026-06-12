@@ -34,6 +34,7 @@ export type EditOp =
   | { type: 'replaceBlock'; index: number; kind: BlockKind }
   | { type: 'delete'; index: number }
   | { type: 'move'; from: number; before: number | null }
+  | { type: 'moveInto'; from: number; anchor: number; pos: 'before' | 'after' }
   | { type: 'setProp'; index: number; name: string; value: string }
   | { type: 'columnize'; from: number; target: number; side: 'left' | 'right' }
   | { type: 'mergeUp'; index: number; text?: string; prevText?: string }

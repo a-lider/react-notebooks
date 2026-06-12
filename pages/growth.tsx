@@ -1,4 +1,4 @@
-import { Page, Stat } from '@/components/notebook'
+import { Page, Stat, Columns, Column } from '@/components/notebook'
 import { Trend, DataTable } from '@/components/analytics'
 import { signups, signupConversion, weeklyActiveUsers } from '@/metrics/growth'
 import { week1Retention } from '@/metrics/retention'
@@ -10,12 +10,18 @@ export default function GrowthDashboard() {
 
       <p>WAU <Stat metric={weeklyActiveUsers} /> · signups <Stat metric={signups} format="percent-change" /> vs previous period · week-1 retention <Stat metric={week1Retention} format="percent" /></p>
 
-      <div className="grid gap-4 md:grid-cols-2">
-        <Trend metric={weeklyActiveUsers} interval="week" />
-        <Trend metric={signups} interval="week" compare="previous-period" />
-        <Trend metric={signupConversion} interval="week" />
-        <Trend metric={week1Retention} interval="month" />
-      </div>
+      <Columns>
+        <Column>
+          <Trend metric={weeklyActiveUsers} interval="week" />
+
+          <Trend metric={signupConversion} interval="week" />
+        </Column>
+        <Column>
+          <Trend metric={signups} interval="week" compare="previous-period" />
+
+          <Trend metric={week1Retention} interval="month" />
+        </Column>
+      </Columns>
 
       <h2>Top acquisition channels</h2>
 
@@ -32,8 +38,6 @@ export default function GrowthDashboard() {
           { channel: 'Paid social', signups: 489, conversion: '1.9%' },
         ]}
       />
-
-      <p></p>
     </Page>
   )
 }

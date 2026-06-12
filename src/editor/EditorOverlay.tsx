@@ -62,10 +62,14 @@ type Menu =
 
 interface Drag {
   from: number
-  /** A vertical gap between top-level units, or a side of a simple block. */
+  /**
+   * A vertical gap between top-level units, a side of a simple block
+   * (creates columns), or a gap inside an existing column.
+   */
   drop:
     | { kind: 'gap'; gap: number; y: number }
     | { kind: 'side'; unit: number; side: 'left' | 'right'; x: number; top: number; height: number }
+    | { kind: 'colgap'; anchor: number; pos: 'before' | 'after'; y: number; left: number; width: number }
   left: number
   width: number
 }
@@ -755,6 +759,40 @@ export default function EditorOverlay({ slug, main }: Props) {
           right: r.right - mainRect.left,
         }
       })
+      // gap zones inside existing columns — dropping there moves the block
+      // into (or within) that column
+      const colZones: {
+        left: number
+        right: number
+        top: number
+        bottom: number
+        rows: { flat: number; top: number; bottom: number }[]
+      }[] = []
+      for (const u of units) {
+        if (!u.isWrapper) continue
+        for (const col of Array.from(u.el.children)) {
+          if (!col.hasAttribute('data-nb-column')) continue
+          const cr = col.getBoundingClientRect()
+          const rows = Array.from(col.children).map((b) => {
+            const r = b.getBoundingClientRect()
+            return {
+              flat: flat.indexOf(b as HTMLElement),
+              top: r.top - mainRect.top + main.scrollTop,
+              bottom: r.bottom - mainRect.top + main.scrollTop,
+            }
+          })
+          if (rows.length) {
+            colZones.push({
+              left: cr.left - mainRect.left,
+              right: cr.right - mainRect.left,
+              top: u.top,
+              bottom: u.bottom,
+              rows,
+            })
+          }
+        }
+      }
+
       const articleRect = a.getBoundingClientRect()
       const left = articleRect.left - mainRect.left
       const width = articleRect.width
@@ -766,6 +804,28 @@ export default function EditorOverlay({ slug, main }: Props) {
         return (units[k - 1].bottom + units[k].top) / 2
       }
       const dropAt = (x: number, y: number): Drag['drop'] => {
+        // inside an existing column → gaps within that column's stack
+        for (const z of colZones) {
+          if (x < z.left - 8 || x > z.right + 8 || y < z.top - 8 || y > z.bottom + 8) continue
+          const m = z.rows.length
+          const colGapY = (k: number): number => {
+            if (k === 0) return z.rows[0].top - 5
+            if (k === m) return z.rows[m - 1].bottom + 5
+            return (z.rows[k - 1].bottom + z.rows[k].top) / 2
+          }
+          let best = 0
+          let bestDist = Infinity
+          for (let k = 0; k <= m; k++) {
+            const d = Math.abs(colGapY(k) - y)
+            if (d < bestDist) {
+              bestDist = d
+              best = k
+            }
+          }
+          const anchor = best < m ? z.rows[best].flat : z.rows[m - 1].flat
+          const pos: 'before' | 'after' = best < m ? 'before' : 'after'
+          return { kind: 'colgap', anchor, pos, y: colGapY(best), left: z.left, width: z.right - z.left }
+        }
         // side zones: near the left/right edge of a simple top-level block
         for (let k = 0; k < n; k++) {
           const u = units[k]
@@ -837,6 +897,13 @@ export default function EditorOverlay({ slug, main }: Props) {
           const target = units[drop.unit]?.flatIndex
           if (target !== undefined && target >= 0 && target !== from) {
             void save({ type: 'columnize', from, target, side: drop.side }, false)
+          }
+          return
+        }
+        if (drop.kind === 'colgap') {
+          if (drop.anchor !== from) {
+            // same-position drops no-op server-side (anchor inside the cut)
+            void save({ type: 'moveInto', from, anchor: drop.anchor, pos: drop.pos }, false)
           }
           return
         }
@@ -1018,6 +1085,13 @@ export default function EditorOverlay({ slug, main }: Props) {
           data-nb-ui
           className="pointer-events-none absolute z-40 w-[3px] rounded-full bg-blue-400"
           style={{ top: drag.drop.top, left: drag.drop.x, height: drag.drop.height }}
+        />
+      )}
+      {drag && drag.drop.kind === 'colgap' && (
+        <div
+          data-nb-ui
+          className="pointer-events-none absolute z-40 h-[3px] rounded-full bg-blue-400"
+          style={{ top: drag.drop.y, left: drag.drop.left, width: drag.drop.width }}
         />
       )}
 

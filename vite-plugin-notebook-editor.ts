@@ -73,6 +73,8 @@ export type EditOp =
   | { type: 'replaceBlock'; index: number; kind: BlockKind }
   | { type: 'delete'; index: number }
   | { type: 'move'; from: number; before: number | null }
+  /** Move a block beside another at ITS level — into/within a column. */
+  | { type: 'moveInto'; from: number; anchor: number; pos: 'before' | 'after' }
   /** Set a component prop to a template-literal value (e.g. a Query's sql). */
   | { type: 'setProp'; index: number; name: string; value: string }
   /** Drop a block beside another → wrap both in a 2-column layout. */
@@ -331,6 +333,30 @@ function applyOp(source: string, blocks: BlockInfo[], op: EditOp): string {
       return source.slice(0, at) + text + source.slice(at, cut.start) + source.slice(cut.end)
     }
     if (at < cut.end) return source // anchor inside the cut — degenerate, no-op
+    return source.slice(0, cut.start) + source.slice(cut.end, at) + text + source.slice(at)
+  }
+
+  if (op.type === 'moveInto') {
+    const fromB = blocks[op.from]
+    const anchorB = blocks[op.anchor]
+    if (!fromB || !anchorB) throw new Error('bad moveInto indexes')
+    if (op.from === op.anchor) return source
+    const lines = blockLines(source, fromB)
+    const cut = blockLinesWithGap(source, fromB)
+    const destIndent = indentOf(source, anchorB.span.start)
+    const chunk = reindentChunk(
+      source.slice(lines.start, lines.end),
+      indentOf(source, fromB.span.start),
+      destIndent
+    )
+    const anchorLines = blockLines(source, anchorB)
+    const at = op.pos === 'before' ? anchorLines.start : anchorLines.end
+    // anchor point swallowed by the cut → the block is already there; no-op
+    if (at >= cut.start && at <= cut.end) return source
+    const text = op.pos === 'before' ? chunk + '\n' : '\n' + chunk
+    if (at <= cut.start) {
+      return source.slice(0, at) + text + source.slice(at, cut.start) + source.slice(cut.end)
+    }
     return source.slice(0, cut.start) + source.slice(cut.end, at) + text + source.slice(at)
   }
 
@@ -593,6 +619,8 @@ function focusBlockFor(op: EditOp): number {
       return op.afterIndex
     case 'move':
       return op.from
+    case 'moveInto':
+      return op.anchor
     case 'columnize':
       return op.target
     case 'mergeUp':

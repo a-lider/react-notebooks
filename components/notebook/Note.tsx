@@ -2,7 +2,8 @@ import type { ReactNode } from 'react'
 
 interface NoteProps {
   author: string
-  children: ReactNode
+  /** Optional: the editor creates empty blocks that fill in later. */
+  children?: ReactNode
 }
 
 /** Interpretation and commentary — distinct from findings in the prose. */
