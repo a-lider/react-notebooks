@@ -1,6 +1,5 @@
-import { Page, Callout } from '@/components/notebook'
-import { Trend } from '@/components/analytics'
-import { signups } from '@/metrics/growth'
+import { Page, Callout, Columns, Column } from '@/components/notebook'
+import { Query } from '@/components/analytics'
 
 export default function Welcome() {
   return (
@@ -23,23 +22,44 @@ export default function Welcome() {
       <h2>How a page gets its data</h2>
 
       <p>
-        Pages never fetch and never contain numbers. They import metrics from{' '}
-        <code>metrics/</code> (the semantic layer, built on the SQL models in{' '}
-        <code>models/</code>) and pass them to components from <code>components/</code>. The
-        chart below is two lines of JSX:
+        For ad-hoc exploration, drop a <code>Query</code> block directly on the page — write SQL
+        against the models in <code>models/</code> (available as views) and the results render
+        inline. In dev mode the query autosaves back into this file as you type:
       </p>
 
-      <Trend metric={signups} interval="week" />
+      <Query
+        title="Signups by browser"
+        sql={`SELECT browser, COUNT(*) AS signups
+FROM signup_events
+WHERE event = 'signup'
+GROUP BY browser
+ORDER BY signups DESC`}
+        chart="pie"
+        x="browser"
+        y="signups"
+      />
 
       <h2>Where things live</h2>
 
       <ul>
         <li><code>pages/</code> — all the pages; columns via Columns/Column when needed</li>
         <li><code>components/notebook</code> — Page, Note, Stat, Mention, Callout</li>
-        <li><code>components/analytics</code> — Trend, Funnel, DataTable</li>
+        <li><code>components/analytics</code> — Trend, Funnel, Query</li>
         <li><code>metrics/</code> + <code>models/</code> — the semantic layer</li>
         <li><code>lib/</code> — the data runtime and result cache</li>
       </ul>
+
+      <Query
+        title="Daily active users (last 30 days)"
+        sql={`SELECT day, COUNT(DISTINCT user_id) AS dau
+FROM active_users
+WHERE day >= date('now', '-30 days')
+GROUP BY day
+ORDER BY day`}
+        chart="bar"
+        x="day"
+        y="dau"
+      />
     </Page>
   )
 }
