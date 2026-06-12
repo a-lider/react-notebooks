@@ -198,6 +198,8 @@ export default function EditorOverlay({ slug, main }: Props) {
   const sessionRef = useRef<EditSession | null>(null)
   const saveTimerRef = useRef<number | null>(null)
   const pendingEditRef = useRef<{ index: number; domTag: string; caret?: number } | null>(null)
+  /** A real drag just ended — swallow the grip's click event. */
+  const draggedRef = useRef(false)
 
   const say = useCallback((msg: string) => {
     setToast(msg)
@@ -720,15 +722,24 @@ export default function EditorOverlay({ slug, main }: Props) {
       }
 
       const el = a.children[from] as HTMLElement
-      el.style.opacity = '0.35'
-      document.body.style.userSelect = 'none'
-      document.body.style.cursor = 'grabbing'
+      const startX = e.clientX
+      const startY = e.clientY
+      // Notion-style: a click is not a drag — visuals only after real movement
+      let active = false
       let current: Drag = { from, gap: from, y: gapY(from), left, width }
-      setDrag(current)
 
       const toContentY = (clientY: number) => clientY - main.getBoundingClientRect().top + main.scrollTop
 
       const onMove = (ev: PointerEvent) => {
+        if (!active) {
+          if (Math.abs(ev.clientX - startX) + Math.abs(ev.clientY - startY) < 5) return
+          active = true
+          draggedRef.current = true
+          el.style.opacity = '0.35'
+          document.body.style.userSelect = 'none'
+          document.body.style.cursor = 'grabbing'
+          setDrag(current)
+        }
         const gap = nearestGap(toContentY(ev.clientY))
         if (gap !== current.gap) {
           current = { ...current, gap, y: gapY(gap) }
@@ -738,6 +749,7 @@ export default function EditorOverlay({ slug, main }: Props) {
       const onUp = () => {
         window.removeEventListener('pointermove', onMove)
         window.removeEventListener('pointerup', onUp)
+        if (!active) return // plain click — the grip's onClick selects + opens the menu
         el.style.opacity = ''
         document.body.style.userSelect = ''
         document.body.style.cursor = ''
@@ -877,6 +889,11 @@ export default function EditorOverlay({ slug, main }: Props) {
               if (e.button === 0) beginDrag(hovered, e)
             }}
             onClick={(e) => {
+              if (draggedRef.current) {
+                draggedRef.current = false
+                return // that was a drag, not a click
+              }
+              setSelected(hovered) // Notion-style: grip click selects the block
               const mainRect = main.getBoundingClientRect()
               setMenu({
                 kind: 'grip',

@@ -26,11 +26,17 @@ export default function SignupFunnel() {
 
       <Note author="alex">The drop tracks the new pricing modal. Next: pull a replay sample of Chrome sessions that abandoned between steps 2 and 3.</Note>
 
-      <p></p>
-
-      <Query y="users" x="browser" chart="bar" sql={`SELECT browser, COUNT(DISTINCT user_id) AS users
+      <Query y="users" x="browser" chart="pie" sql={`SELECT browser, COUNT(DISTINCT user_id) AS users
 FROM events WHERE event = 'signup'
 GROUP BY browser ORDER BY users DESC`} />
+
+      <p></p>
+
+      <h2>Titile</h2>
+
+      <p></p>
+
+      <p></p>
     </Page>
   )
 }
