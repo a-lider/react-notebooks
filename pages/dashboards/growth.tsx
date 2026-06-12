@@ -32,6 +32,8 @@ export default function GrowthDashboard() {
           { channel: 'Paid social', signups: 489, conversion: '1.9%' },
         ]}
       />
+
+      <p></p>
     </Page>
   )
 }

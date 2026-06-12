@@ -28,3 +28,8 @@ lib/cache/
 
 # editor/agent screenshots for visual checks
 snapshots/
+
+# design docs / plans (local only)
+plans/
+# editor undo history
+.notebooks/
