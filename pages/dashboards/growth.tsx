@@ -8,11 +8,7 @@ export default function GrowthDashboard() {
     <Page title="Growth" layout="wide">
       <h1>Growth</h1>
 
-      <p>
-        WAU <Stat metric={weeklyActiveUsers} /> · signups{' '}
-        <Stat metric={signups} format="percent-change" /> vs previous period · week-1 retention{' '}
-        <Stat metric={week1Retention} format="percent" />
-      </p>
+      <p>WAU <Stat metric={weeklyActiveUsers} /> · signups <Stat metric={signups} format="percent-change" /> vs previous period · week-1 retention <Stat metric={week1Retention} format="percent" /></p>
 
       <div className="grid gap-4 md:grid-cols-2">
         <Trend metric={weeklyActiveUsers} interval="week" />

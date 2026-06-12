@@ -1,8 +1,11 @@
-import { Suspense, useEffect, useState } from 'react'
-import { NotebookText, LayoutDashboard } from 'lucide-react'
+import { lazy, Suspense, useEffect, useState } from 'react'
+import { NotebookText, LayoutDashboard, Pencil, Eye } from 'lucide-react'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { groups, pages } from './registry'
 import { ErrorBoundary } from './ErrorBoundary'
+
+// dev-only structured editor (vite-plugin-notebook-editor serves its API)
+const EditorOverlay = lazy(() => import('./editor/EditorOverlay'))
 
 function usePath(): [string, (slug: string) => void] {
   const [path, setPath] = useState(() => decodeURIComponent(location.pathname.slice(1)))
@@ -22,6 +25,8 @@ function usePath(): [string, (slug: string) => void] {
 
 export default function App() {
   const [path, navigate] = usePath()
+  const [editMode, setEditMode] = useState(false)
+  const [mainEl, setMainEl] = useState<HTMLElement | null>(null)
   const current = pages.find((p) => p.slug === path) ?? pages[0]
 
   return (
@@ -66,7 +71,22 @@ export default function App() {
         </div>
       </aside>
 
-      <main className="flex-1 overflow-y-auto">
+      <main ref={setMainEl} className="relative flex-1 overflow-y-auto">
+        {import.meta.env.DEV && (
+          <button
+            onClick={() => setEditMode((v) => !v)}
+            title={editMode ? 'Done editing' : 'Edit this page'}
+            className={[
+              'fixed right-4 top-4 z-50 flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-medium shadow-sm transition-colors',
+              editMode
+                ? 'bg-primary text-primary-foreground'
+                : 'bg-background text-muted-foreground hover:text-foreground',
+            ].join(' ')}
+          >
+            {editMode ? <Eye className="size-3.5" /> : <Pencil className="size-3.5" />}
+            {editMode ? 'Done' : 'Edit'}
+          </button>
+        )}
         {current ? (
           <ErrorBoundary resetKey={current.slug}>
             <Suspense
@@ -76,6 +96,11 @@ export default function App() {
             >
               <current.Component />
             </Suspense>
+            {import.meta.env.DEV && editMode && mainEl && (
+              <Suspense fallback={null}>
+                <EditorOverlay key={current.slug} slug={current.slug} main={mainEl} />
+              </Suspense>
+            )}
           </ErrorBoundary>
         ) : (
           <div className="px-10 py-12 text-sm text-muted-foreground">

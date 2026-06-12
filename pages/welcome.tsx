@@ -8,9 +8,10 @@ export default function Welcome() {
       <h1>Welcome to react-notebooks</h1>
 
       <p>
-        Notebooks and dashboards here are plain JSX pages in <code>pages/</code>. There is no
-        editor yet, and that's the point: agents write pages as code, this app renders them,
-        and git reviews them.
+        Notebooks and dashboards here are plain JSX pages in <code>pages/</code>. Agents write
+        pages as code, this app renders them, and git reviews them. Hit Edit (top right) to
+        change text, add blocks or delete them — every action becomes a surgical patch to the
+        page's source file.
       </p>
 
       <Callout>

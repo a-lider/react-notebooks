@@ -9,7 +9,8 @@ interface NoteProps {
 export function Note({ author, children }: NoteProps) {
   return (
     <aside className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm leading-6 text-amber-950 dark:border-amber-900/50 dark:bg-amber-950/30 dark:text-amber-100">
-      <span className="font-semibold">{author}:</span> {children}
+      {/* data-nb-children marks where {children} lands — the editor's contract */}
+      <span className="font-semibold">{author}:</span> <span data-nb-children>{children}</span>
     </aside>
   )
 }
