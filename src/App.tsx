@@ -28,6 +28,14 @@ export default function App() {
   const [mainEl, setMainEl] = useState<HTMLElement | null>(null)
   const current = pages.find((p) => p.slug === path) ?? pages[0]
 
+  // keep the URL canonical (e.g. '/' resolves to the first page) — components
+  // like <Query> derive the page slug from location.pathname
+  useEffect(() => {
+    if (current && decodeURIComponent(location.pathname.slice(1)) !== current.slug) {
+      history.replaceState(null, '', '/' + current.slug)
+    }
+  }, [current])
+
   return (
     <div className="flex h-screen bg-background text-foreground">
       <aside className="flex w-60 shrink-0 flex-col border-r bg-sidebar text-sidebar-foreground">

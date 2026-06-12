@@ -22,6 +22,7 @@ import {
   Heading2,
   Heading3,
   Megaphone,
+  Database,
   Copy as CopyIcon,
 } from 'lucide-react'
 import {
@@ -73,6 +74,7 @@ const BLOCK_KINDS: { kind: BlockKind; label: string; Icon: typeof Type; domTag: 
   { kind: 'h2', label: 'Heading 2', Icon: Heading2, domTag: 'h2' },
   { kind: 'h3', label: 'Heading 3', Icon: Heading3, domTag: 'h3' },
   { kind: 'callout', label: 'Callout', Icon: Megaphone, domTag: 'div' },
+  { kind: 'sql', label: 'SQL', Icon: Database, domTag: 'figure' },
 ]
 
 const PLACEHOLDER = "Type something, or press '/' for blocks"
@@ -222,6 +224,25 @@ export default function EditorOverlay({ slug, main }: Props) {
     const a = articleOf(main)
     return !!a && !!pageRef.current && a.children.length === pageRef.current.blocks.length
   }, [main])
+
+  // refresh the payload after any HMR update (agent edits, Query self-saves)
+  // so the overlay's hash/spans stay current; skip mid-session — the session
+  // owns its own refresh cycle
+  useEffect(() => {
+    const hot = import.meta.hot
+    if (!hot) return
+    const onUpdate = () => {
+      if (sessionRef.current) return
+      fetchPage(slug)
+        .then((p) => {
+          if (pageRef.current && p.hash !== pageRef.current.hash) setPage(p)
+          else if (!pageRef.current) setPage(p)
+        })
+        .catch(() => {})
+    }
+    hot.on('vite:afterUpdate', onUpdate)
+    return () => hot.off('vite:afterUpdate', onUpdate)
+  }, [slug])
 
   // ---- saving -------------------------------------------------------------
   const save = useCallback(
@@ -507,6 +528,8 @@ export default function EditorOverlay({ slug, main }: Props) {
       if (drag) return
       const target = e.target as HTMLElement
       if (target.closest('[data-nb-ui]')) return
+      // interactive component regions (e.g. the SQL editor) own their clicks
+      if (target.closest('[data-nb-interactive]')) return
       const p = pageRef.current
       const a = articleOf(main)
       if (!p || !a || !domInSync()) return
@@ -573,6 +596,9 @@ export default function EditorOverlay({ slug, main }: Props) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (!(e.metaKey || e.ctrlKey)) return
+      // interactive regions (SQL textarea) keep native undo while focused;
+      // once blurred and saved, the workspace history covers their edits
+      if ((e.target as HTMLElement).closest?.('[data-nb-interactive]')) return
       const k = e.key.toLowerCase()
       const isUndo = k === 'z' && !e.shiftKey
       const isRedo = (k === 'z' && e.shiftKey) || k === 'y'
@@ -714,7 +740,8 @@ export default function EditorOverlay({ slug, main }: Props) {
     void (async () => {
       await endSessionRef.current(true)
       const next = await save({ type: 'insert', afterIndex, kind }, false)
-      if (next) pendingEditRef.current = { index: afterIndex + 1, domTag }
+      // sql blocks own their editing UI — no text session to open
+      if (next && kind !== 'sql') pendingEditRef.current = { index: afterIndex + 1, domTag }
     })()
   }
 
@@ -723,7 +750,7 @@ export default function EditorOverlay({ slug, main }: Props) {
     void (async () => {
       await endSessionRef.current(false) // discard the typed '/'
       const next = await save({ type: 'replaceBlock', index, kind }, false)
-      if (next) pendingEditRef.current = { index, domTag }
+      if (next && kind !== 'sql') pendingEditRef.current = { index, domTag }
     })()
   }
 

@@ -24,7 +24,7 @@ export interface PagePayload {
   canRedo: boolean
 }
 
-export type BlockKind = 'p' | 'h2' | 'h3' | 'callout'
+export type BlockKind = 'p' | 'h2' | 'h3' | 'callout' | 'sql'
 
 export type EditOp =
   | { type: 'replaceInner'; index: number; text: string }
@@ -32,6 +32,7 @@ export type EditOp =
   | { type: 'replaceBlock'; index: number; kind: BlockKind }
   | { type: 'delete'; index: number }
   | { type: 'move'; from: number; before: number | null }
+  | { type: 'setProp'; index: number; name: string; value: string }
   | { type: 'mergeUp'; index: number; text?: string; prevText?: string }
   | { type: 'duplicate'; index: number }
 

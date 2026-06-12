@@ -54,7 +54,7 @@ export interface PagePayload {
   canRedo: boolean
 }
 
-export type BlockKind = 'p' | 'h2' | 'h3' | 'callout'
+export type BlockKind = 'p' | 'h2' | 'h3' | 'callout' | 'sql'
 
 export type EditOp =
   | { type: 'replaceInner'; index: number; text: string }
@@ -62,6 +62,8 @@ export type EditOp =
   | { type: 'replaceBlock'; index: number; kind: BlockKind }
   | { type: 'delete'; index: number }
   | { type: 'move'; from: number; before: number | null }
+  /** Set a component prop to a template-literal value (e.g. a Query's sql). */
+  | { type: 'setProp'; index: number; name: string; value: string }
   /**
    * Merge block[index] into block[index-1] (Backspace at start / Delete at
    * end). `prevText`/`text` carry unsaved live content; omitted = use disk.
@@ -83,6 +85,13 @@ const SNIPPETS: Record<BlockKind, string> = {
   h2: '<h2></h2>',
   h3: '<h3></h3>',
   callout: '<Callout></Callout>',
+  sql: '<Query sql={`SELECT event, COUNT(*) AS count\nFROM events\nGROUP BY event ORDER BY count DESC`} />',
+}
+
+/** Imports each snippet needs, added to the page when the block is created. */
+const SNIPPET_IMPORTS: Partial<Record<BlockKind, { name: string; from: string }>> = {
+  callout: { name: 'Callout', from: '@/components/notebook' },
+  sql: { name: 'Query', from: '@/components/analytics' },
 }
 
 function hashSource(source: string): string {
@@ -190,7 +199,8 @@ function applyOp(source: string, blocks: BlockInfo[], op: EditOp): string {
     const lineEnd = source.indexOf('\n', block.span.end)
     const at = lineEnd === -1 ? block.span.end : lineEnd
     let next = source.slice(0, at) + `\n\n${indent}${SNIPPETS[op.kind]}` + source.slice(at)
-    if (op.kind === 'callout') next = ensureNamedImport(next, 'Callout', '@/components/notebook')
+    const imp = SNIPPET_IMPORTS[op.kind]
+    if (imp) next = ensureNamedImport(next, imp.name, imp.from)
     return next
   }
 
@@ -199,8 +209,27 @@ function applyOp(source: string, blocks: BlockInfo[], op: EditOp): string {
     if (!block) throw new Error(`no block at index ${op.index}`)
     let next =
       source.slice(0, block.span.start) + SNIPPETS[op.kind] + source.slice(block.span.end)
-    if (op.kind === 'callout') next = ensureNamedImport(next, 'Callout', '@/components/notebook')
+    const imp = SNIPPET_IMPORTS[op.kind]
+    if (imp) next = ensureNamedImport(next, imp.name, imp.from)
     return removeUnusedNamedImports(next)
+  }
+
+  if (op.type === 'setProp') {
+    // re-find the element's attribute via the AST and replace its value
+    // with a template literal — surgical, like every other op
+    const page = findPageElement(parseAst(source))
+    const el = page?.children.filter((c): c is t.JSXElement => c.type === 'JSXElement')[op.index]
+    if (!el) throw new Error(`no block at index ${op.index}`)
+    const escaped = op.value.replace(/\\/g, '\\\\').replace(/`/g, '\\`').replace(/\$\{/g, '\\${')
+    const literal = `{\`${escaped}\`}`
+    const attr = el.openingElement.attributes.find(
+      (a): a is t.JSXAttribute => a.type === 'JSXAttribute' && a.name.name === op.name
+    )
+    if (attr?.value) {
+      return source.slice(0, attr.value.start!) + literal + source.slice(attr.value.end!)
+    }
+    const at = el.openingElement.name.end!
+    return source.slice(0, at) + ` ${op.name}=${literal}` + source.slice(at)
   }
 
   if (op.type === 'move') {
@@ -398,11 +427,17 @@ function recordEntry(h: HistoryFile, before: string, after: string, op: EditOp, 
   h.entries = h.entries.slice(0, h.cursor) // any new edit truncates the redo tail
   const last = h.entries[h.entries.length - 1]
   const beforeHash = hashSource(before)
+  const label =
+    op.type === 'replaceInner'
+      ? 'typing'
+      : op.type === 'setProp'
+        ? `typing:${op.name}` // sql editing etc. coalesces like text typing
+        : op.type
 
   if (
     defer &&
-    op.type === 'replaceInner' &&
-    last?.label === 'typing' &&
+    (op.type === 'replaceInner' || op.type === 'setProp') &&
+    last?.label === label &&
     last.block === op.index &&
     last.resultHash === beforeHash && // contiguous: nothing happened in between
     Date.now() - last.ts < COALESCE_WINDOW_MS
@@ -416,7 +451,7 @@ function recordEntry(h: HistoryFile, before: string, after: string, op: EditOp, 
       ...d,
       baseHash: beforeHash,
       resultHash: hashSource(after),
-      label: op.type === 'replaceInner' ? 'typing' : op.type,
+      label,
       block: focusBlockFor(op),
       ts: Date.now(),
     })

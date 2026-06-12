@@ -28,6 +28,9 @@ Imports use the `@/` alias, which points at the repo root: `@/components/noteboo
    (shadcn chart + Recharts — copy Trend.tsx's shape), then use it from the page.
 4. Need a new metric? Define it in `metrics/` with `defineMetric`, building on
    `models/` where possible. Check existing metrics first — don't redefine.
+   For ad-hoc SQL, use a `<Query sql={`...`} />` block — it runs against
+   `data/events.db` (generate with `python3 data/generate.py`; `models/*.sql`
+   are available as views).
 5. Keep props literal. Extract anything computed into the component or metric.
 
 ## Editing an existing page
