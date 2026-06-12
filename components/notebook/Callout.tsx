@@ -13,8 +13,12 @@ export function Callout({ variant = 'info', children }: CalloutProps) {
       : 'border-sky-200 bg-sky-50 text-sky-950 dark:border-sky-900/50 dark:bg-sky-950/30 dark:text-sky-100'
   return (
     <div className={`rounded-lg border px-4 py-3 text-sm leading-6 ${styles}`}>
-      {/* data-nb-children marks where {children} lands — the editor's contract */}
-      <span data-nb-children>{children}</span>
+      {/* data-nb-children marks where {children} lands — the editor's contract.
+          block + min-h: an empty inline span has no box, so the callout would
+          shrink and the caret would have nowhere to blink */}
+      <span data-nb-children className="block min-h-6">
+        {children}
+      </span>
     </div>
   )
 }
