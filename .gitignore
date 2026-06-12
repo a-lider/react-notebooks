@@ -22,3 +22,6 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# query result cache — data never lives in pages
+lib/cache/
