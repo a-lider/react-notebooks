@@ -215,13 +215,19 @@ function applyOp(source: string, blocks: BlockInfo[], op: EditOp): string {
   }
 
   if (op.type === 'setProp') {
-    // re-find the element's attribute via the AST and replace its value
-    // with a template literal — surgical, like every other op
+    // re-find the element's attribute via the AST and replace its value —
+    // surgical, like every other op. Plain values become string attrs
+    // (chart="bar"); multiline/awkward ones become template literals.
     const page = findPageElement(parseAst(source))
     const el = page?.children.filter((c): c is t.JSXElement => c.type === 'JSXElement')[op.index]
     if (!el) throw new Error(`no block at index ${op.index}`)
-    const escaped = op.value.replace(/\\/g, '\\\\').replace(/`/g, '\\`').replace(/\$\{/g, '\\${')
-    const literal = `{\`${escaped}\`}`
+    let literal: string
+    if (/[\n"`\\]|\$\{/.test(op.value)) {
+      const escaped = op.value.replace(/\\/g, '\\\\').replace(/`/g, '\\`').replace(/\$\{/g, '\\${')
+      literal = `{\`${escaped}\`}`
+    } else {
+      literal = `"${op.value}"`
+    }
     const attr = el.openingElement.attributes.find(
       (a): a is t.JSXAttribute => a.type === 'JSXAttribute' && a.name.name === op.name
     )

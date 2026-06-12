@@ -1,5 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Loader2, Play } from 'lucide-react'
+import { ChartColumn, ChartLine, ChartPie, Loader2, Play, TableProperties } from 'lucide-react'
+import { Bar, BarChart, CartesianGrid, Cell, Line, LineChart, Pie, PieChart, XAxis, YAxis } from 'recharts'
+import {
+  ChartContainer,
+  ChartTooltip,
+  ChartTooltipContent,
+  type ChartConfig,
+} from '@/components/ui/chart'
 import {
   Table,
   TableBody,
@@ -9,10 +16,18 @@ import {
   TableRow,
 } from '@/components/ui/table'
 
+export type QueryChart = 'table' | 'bar' | 'line' | 'pie'
+
 interface QueryProps {
   /** SQL over data/events.db; models/*.sql are available as views. */
   sql: string
   title?: string
+  /** Default output: 'table' (default) or a chart type. */
+  chart?: QueryChart
+  /** Column for the x axis / pie slices. */
+  x?: string
+  /** Column for the y axis / pie values. */
+  y?: string
 }
 
 interface QueryResult {
@@ -21,6 +36,7 @@ interface QueryResult {
 }
 
 const MAX_ROWS = 100
+const MAX_CHART_POINTS = 200
 
 // results survive HMR remounts and repeat visits within the session
 const resultCache = new Map<string, QueryResult>()
@@ -71,15 +87,20 @@ function highlightSql(src: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// Dev-only self-save: write the draft back into this block's sql prop,
-// addressed by DOM position (the same positional identity the editor uses)
+// Dev-only self-save: write a prop back into this block's source, addressed
+// by DOM position (the same positional identity the editor uses)
 // ---------------------------------------------------------------------------
 
 function pageSlug(): string {
   return decodeURIComponent(location.pathname.replace(/^\//, ''))
 }
 
-async function saveSqlToSource(root: HTMLElement, value: string): Promise<void> {
+async function savePropToSource(
+  root: HTMLElement,
+  name: string,
+  value: string,
+  defer: boolean
+): Promise<void> {
   const article = root.closest('article')
   if (!article) throw new Error('not inside a page')
   let node: HTMLElement = root
@@ -96,12 +117,7 @@ async function saveSqlToSource(root: HTMLElement, value: string): Promise<void> 
   const res = await fetch('/__editor/apply', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      slug,
-      hash,
-      op: { type: 'setProp', index, name: 'sql', value },
-      defer: true, // suppress HMR while typing; flushed on blur/unmount
-    }),
+    body: JSON.stringify({ slug, hash, op: { type: 'setProp', index, name, value }, defer }),
   })
   if (!res.ok) throw new Error(`save failed: ${res.status}`)
 }
@@ -115,9 +131,98 @@ function flushSource(): void {
 }
 
 // ---------------------------------------------------------------------------
+// Charts — Metabase-style: pick the type and which columns drive the axes
+// ---------------------------------------------------------------------------
 
-/** A runnable SQL block: editor with highlighting, results as a table. */
-export function Query({ sql, title }: QueryProps) {
+const PIE_COLORS = [1, 2, 3, 4, 5].map((i) => `var(--chart-${i})`)
+
+function numericColumns(rows: Record<string, unknown>[]): string[] {
+  if (!rows.length) return []
+  return Object.keys(rows[0]).filter((k) => typeof rows[0][k] === 'number')
+}
+
+/** Sensible defaults: first text-ish column on x, first numeric on y. */
+function inferAxes(rows: Record<string, unknown>[]): { x: string; y: string } {
+  const cols = rows.length ? Object.keys(rows[0]) : []
+  const numeric = numericColumns(rows)
+  const x = cols.find((c) => !numeric.includes(c)) ?? cols[0] ?? ''
+  const y = numeric[0] ?? cols[1] ?? cols[0] ?? ''
+  return { x, y }
+}
+
+function ResultChart({
+  rows,
+  type,
+  x,
+  y,
+}: {
+  rows: Record<string, unknown>[]
+  type: Exclude<QueryChart, 'table'>
+  x: string
+  y: string
+}) {
+  const data = rows.slice(0, MAX_CHART_POINTS)
+  if (!data.length || !x || !y) {
+    return (
+      <div className="flex h-48 items-center justify-center text-xs text-muted-foreground">
+        Nothing to chart — pick the x and y columns above.
+      </div>
+    )
+  }
+  const config: ChartConfig = { [y]: { label: y, color: 'var(--chart-2)' } }
+
+  if (type === 'pie') {
+    return (
+      <ChartContainer config={config} className="mx-auto aspect-[1.8/1] max-h-64 w-full p-3">
+        <PieChart>
+          <ChartTooltip content={<ChartTooltipContent nameKey={x} hideLabel />} />
+          <Pie
+            data={data.slice(0, 12)}
+            dataKey={y}
+            nameKey={x}
+            label={(entry) => String((entry as { payload?: Record<string, unknown> }).payload?.[x] ?? '')}
+            outerRadius="78%"
+          >
+            {data.slice(0, 12).map((_, i) => (
+              <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />
+            ))}
+          </Pie>
+        </PieChart>
+      </ChartContainer>
+    )
+  }
+
+  if (type === 'line') {
+    return (
+      <ChartContainer config={config} className="aspect-[2.4/1] w-full p-3">
+        <LineChart data={data} margin={{ left: 0, right: 12, top: 8 }}>
+          <CartesianGrid vertical={false} strokeDasharray="3 3" />
+          <XAxis dataKey={x} tickLine={false} axisLine={false} minTickGap={28} />
+          <YAxis width={48} tickLine={false} axisLine={false} />
+          <ChartTooltip content={<ChartTooltipContent />} />
+          <Line dataKey={y} type="monotone" stroke="var(--chart-2)" strokeWidth={2} dot={false} />
+        </LineChart>
+      </ChartContainer>
+    )
+  }
+
+  return (
+    <ChartContainer config={config} className="aspect-[2.4/1] w-full p-3">
+      <BarChart data={data} margin={{ left: 0, right: 12, top: 8 }}>
+        <CartesianGrid vertical={false} strokeDasharray="3 3" />
+        <XAxis dataKey={x} tickLine={false} axisLine={false} interval={0} />
+        <YAxis width={48} tickLine={false} axisLine={false} />
+        <ChartTooltip content={<ChartTooltipContent />} />
+        <Bar dataKey={y} fill="var(--chart-2)" radius={[4, 4, 0, 0]} maxBarSize={64} />
+      </BarChart>
+    </ChartContainer>
+  )
+}
+
+// ---------------------------------------------------------------------------
+
+/** A runnable SQL block: editor, results table, and chart visualization. */
+export function Query({ sql, title, chart = 'table', x, y }: QueryProps) {
   const rootRef = useRef<HTMLElement | null>(null)
   const preRef = useRef<HTMLPreElement | null>(null)
   const [draft, setDraft] = useState(sql)
@@ -129,13 +234,15 @@ export function Query({ sql, title }: QueryProps) {
   const saveTimer = useRef<number | null>(null)
   const savedSinceFocus = useRef(false)
 
-  // adopt external changes (agent edits, undo) when not actively editing —
-  // the derived-state-during-render pattern
-  const [prevSql, setPrevSql] = useState(sql)
-  if (sql !== prevSql) {
-    setPrevSql(sql)
-    if (!focused) setDraft(sql)
+  // visualization config — local state adopting prop changes (derived state)
+  const [cfg, setCfg] = useState({ chart, x, y })
+  const [prevProps, setPrevProps] = useState({ sql, chart, x, y })
+  if (sql !== prevProps.sql || chart !== prevProps.chart || x !== prevProps.x || y !== prevProps.y) {
+    setPrevProps({ sql, chart, x, y })
+    setCfg({ chart, x, y })
+    if (sql !== prevProps.sql && !focused) setDraft(sql)
   }
+  const [tab, setTab] = useState<'table' | 'chart'>(chart !== 'table' ? 'chart' : 'table')
 
   const run = useCallback(async (q: string) => {
     setRunning(true)
@@ -159,12 +266,12 @@ export function Query({ sql, title }: QueryProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  const save = useCallback(async (value: string) => {
+  const saveProp = useCallback(async (name: string, value: string, defer: boolean) => {
     if (!import.meta.env.DEV || !rootRef.current) return
     setSaveState('saving')
     try {
-      await saveSqlToSource(rootRef.current, value)
-      savedSinceFocus.current = true
+      await savePropToSource(rootRef.current, name, value, defer)
+      if (defer) savedSinceFocus.current = true
     } catch (e) {
       console.warn('[Query] save failed:', e)
     }
@@ -177,7 +284,7 @@ export function Query({ sql, title }: QueryProps) {
     if (saveTimer.current !== null) window.clearTimeout(saveTimer.current)
     saveTimer.current = window.setTimeout(() => {
       saveTimer.current = null
-      void save(value)
+      void saveProp('sql', value, true)
     }, 1000)
   }
 
@@ -188,7 +295,7 @@ export function Query({ sql, title }: QueryProps) {
       saveTimer.current = null
     }
     void (async () => {
-      if (draft !== sql) await save(draft)
+      if (draft !== sql) await saveProp('sql', draft, true)
       if (savedSinceFocus.current) {
         savedSinceFocus.current = false
         flushSource()
@@ -207,7 +314,7 @@ export function Query({ sql, title }: QueryProps) {
     if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
       e.preventDefault()
       if (saveTimer.current !== null) window.clearTimeout(saveTimer.current)
-      void save(draft)
+      void saveProp('sql', draft, true)
       void run(draft)
     } else if (e.key === 'Tab') {
       e.preventDefault()
@@ -218,9 +325,24 @@ export function Query({ sql, title }: QueryProps) {
     }
   }
 
+  const setChartType = (type: QueryChart) => {
+    setCfg((c) => ({ ...c, chart: type }))
+    void saveProp('chart', type, false)
+  }
+  const setAxis = (axis: 'x' | 'y', column: string) => {
+    setCfg((c) => ({ ...c, [axis]: column }))
+    void saveProp(axis, column, false)
+  }
+
   const lines = draft.split('\n')
-  const columns = result?.rows.length ? Object.keys(result.rows[0]) : []
-  const shown = result?.rows.slice(0, MAX_ROWS) ?? []
+  const rows = result?.rows ?? []
+  const columns = rows.length ? Object.keys(rows[0]) : []
+  const shown = rows.slice(0, MAX_ROWS)
+  const inferred = inferAxes(rows)
+  const effX = cfg.x ?? inferred.x
+  const effY = cfg.y ?? inferred.y
+  const chartType: Exclude<QueryChart, 'table'> =
+    cfg.chart && cfg.chart !== 'table' ? cfg.chart : 'bar'
 
   return (
     <figure ref={rootRef} className="overflow-hidden rounded-xl border bg-card">
@@ -236,7 +358,7 @@ export function Query({ sql, title }: QueryProps) {
         )}
         <button
           onClick={() => {
-            void save(draft)
+            void saveProp('sql', draft, true)
             void run(draft)
           }}
           disabled={running}
@@ -292,48 +414,162 @@ export function Query({ sql, title }: QueryProps) {
         </div>
       )}
 
-      {/* results */}
+      {/* output */}
       {result && !error && (
-        <div className="border-t">
-          <div className="max-h-80 overflow-auto">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  {columns.map((c) => (
-                    <TableHead key={c} className="whitespace-nowrap font-mono text-xs">
-                      {c}
-                    </TableHead>
+        <div data-nb-interactive className="border-t">
+          {/* tabs + chart config */}
+          <div className="flex flex-wrap items-center gap-1 border-b px-2 py-1.5">
+            <OutputTab
+              active={tab === 'table'}
+              icon={<TableProperties className="size-3.5" />}
+              label="Results"
+              onClick={() => setTab('table')}
+            />
+            <OutputTab
+              active={tab === 'chart'}
+              icon={<ChartColumn className="size-3.5" />}
+              label="Chart"
+              onClick={() => setTab('chart')}
+            />
+            {tab === 'chart' && (
+              <div className="ml-auto flex flex-wrap items-center gap-2 pr-2 text-xs">
+                <div className="flex overflow-hidden rounded-md border">
+                  {(
+                    [
+                      ['bar', ChartColumn],
+                      ['line', ChartLine],
+                      ['pie', ChartPie],
+                    ] as const
+                  ).map(([type, Icon]) => (
+                    <button
+                      key={type}
+                      title={type}
+                      onClick={() => setChartType(type)}
+                      className={[
+                        'flex items-center gap-1 px-2 py-1 transition-colors',
+                        chartType === type
+                          ? 'bg-accent text-accent-foreground'
+                          : 'text-muted-foreground hover:bg-accent/50',
+                      ].join(' ')}
+                    >
+                      <Icon className="size-3.5" />
+                    </button>
                   ))}
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {shown.map((row, i) => (
-                  <TableRow key={i}>
+                </div>
+                <AxisSelect
+                  label={chartType === 'pie' ? 'slices' : 'x'}
+                  value={effX}
+                  columns={columns}
+                  onChange={(c) => setAxis('x', c)}
+                />
+                <AxisSelect
+                  label={chartType === 'pie' ? 'value' : 'y'}
+                  value={effY}
+                  columns={columns}
+                  onChange={(c) => setAxis('y', c)}
+                />
+              </div>
+            )}
+          </div>
+
+          {tab === 'chart' ? (
+            <ResultChart rows={rows} type={chartType} x={effX} y={effY} />
+          ) : (
+            <div className="max-h-80 overflow-auto">
+              <Table>
+                <TableHeader>
+                  <TableRow>
                     {columns.map((c) => (
-                      <TableCell
-                        key={c}
-                        className={
-                          typeof row[c] === 'number'
-                            ? 'text-right font-mono text-xs tabular-nums'
-                            : 'font-mono text-xs'
-                        }
-                      >
-                        {row[c] === null ? '∅' : String(row[c])}
-                      </TableCell>
+                      <TableHead key={c} className="whitespace-nowrap font-mono text-xs">
+                        {c}
+                      </TableHead>
                     ))}
                   </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </div>
+                </TableHeader>
+                <TableBody>
+                  {shown.map((row, i) => (
+                    <TableRow key={i}>
+                      {columns.map((c) => (
+                        <TableCell
+                          key={c}
+                          className={
+                            typeof row[c] === 'number'
+                              ? 'text-right font-mono text-xs tabular-nums'
+                              : 'font-mono text-xs'
+                          }
+                        >
+                          {row[c] === null ? '∅' : String(row[c])}
+                        </TableCell>
+                      ))}
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          )}
+
           <div className="flex items-center gap-2 border-t px-4 py-1.5 text-[11px] text-muted-foreground">
-            Showing {shown.length}
-            {result.rows.length > MAX_ROWS && ` of ${result.rows.length.toLocaleString('en-US')}`}{' '}
-            rows
+            {tab === 'chart'
+              ? `${Math.min(rows.length, MAX_CHART_POINTS)} of ${rows.length.toLocaleString('en-US')} rows charted`
+              : `Showing ${shown.length}${rows.length > MAX_ROWS ? ` of ${rows.length.toLocaleString('en-US')}` : ''} rows`}
             <span className="ml-auto">{result.ms} ms</span>
           </div>
         </div>
       )}
     </figure>
+  )
+}
+
+function OutputTab({
+  active,
+  icon,
+  label,
+  onClick,
+}: {
+  active: boolean
+  icon: React.ReactNode
+  label: string
+  onClick: () => void
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={[
+        'flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-colors',
+        active ? 'bg-accent text-accent-foreground' : 'text-muted-foreground hover:bg-accent/50',
+      ].join(' ')}
+    >
+      {icon}
+      {label}
+    </button>
+  )
+}
+
+function AxisSelect({
+  label,
+  value,
+  columns,
+  onChange,
+}: {
+  label: string
+  value: string
+  columns: string[]
+  onChange: (column: string) => void
+}) {
+  return (
+    <label className="flex items-center gap-1 text-muted-foreground">
+      {label}
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="rounded-md border bg-background px-1.5 py-0.5 font-mono text-[11px] text-foreground"
+      >
+        {columns.map((c) => (
+          <option key={c} value={c}>
+            {c}
+          </option>
+        ))}
+      </select>
+    </label>
   )
 }
