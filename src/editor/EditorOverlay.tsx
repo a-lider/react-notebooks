@@ -14,7 +14,16 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { Plus, GripVertical, Trash2, Type, Heading2, Heading3, Megaphone } from 'lucide-react'
+import {
+  Plus,
+  GripVertical,
+  Trash2,
+  Type,
+  Heading2,
+  Heading3,
+  Megaphone,
+  Copy as CopyIcon,
+} from 'lucide-react'
 import {
   applyOp,
   fetchPage,
@@ -172,9 +181,11 @@ export default function EditorOverlay({ slug, main }: Props) {
   const [page, setPage] = useState<PagePayload | null>(null)
   const [status, setStatus] = useState<SaveStatus>('saved')
   const [hovered, setHovered] = useState<number | null>(null)
+  const [selected, setSelected] = useState<number | null>(null)
   const [menu, setMenu] = useState<Menu | null>(null)
   const [drag, setDrag] = useState<Drag | null>(null)
   const [toast, setToast] = useState<string | null>(null)
+  const [, setScrollTick] = useState(0)
 
   const pageRef = useRef<PagePayload | null>(null)
   useEffect(() => {
@@ -480,6 +491,7 @@ export default function EditorOverlay({ slug, main }: Props) {
     }
     const onScroll = () => {
       if (!drag) setHovered(null)
+      setScrollTick((t) => t + 1) // keep selection/menu overlays anchored
     }
     const onClick = (e: MouseEvent) => {
       if (drag) return
@@ -491,11 +503,17 @@ export default function EditorOverlay({ slug, main }: Props) {
 
       const ix = indexAt(target)
       if (ix !== null) {
-        if (p.blocks[ix]?.editable && sessionRef.current?.index !== ix) {
-          startEdit(ix, { x: e.clientX, y: e.clientY })
+        if (p.blocks[ix]?.editable) {
+          setSelected(null)
+          if (sessionRef.current?.index !== ix) startEdit(ix, { x: e.clientX, y: e.clientY })
+        } else {
+          // non-editable block (chart, table…) → Notion-style selection
+          void endSessionRef.current(true)
+          setSelected(ix)
         }
         return
       }
+      setSelected(null)
       // click below the last block → new paragraph (or focus a trailing empty one)
       if ((target === a || target === main) && p.blocks.length > 0) {
         const last = a.children[a.children.length - 1]
@@ -539,6 +557,24 @@ export default function EditorOverlay({ slug, main }: Props) {
     return () => window.removeEventListener('pointerdown', onDown)
   }, [menu])
 
+  // keyboard actions on a selected (non-editable) block
+  useEffect(() => {
+    if (selected === null) return
+    const onKey = (e: KeyboardEvent) => {
+      if (sessionRef.current) return
+      if (e.key === 'Backspace' || e.key === 'Delete') {
+        e.preventDefault()
+        const index = selected
+        setSelected(null)
+        void save({ type: 'delete', index }, false)
+      } else if (e.key === 'Escape') {
+        setSelected(null)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [selected, save])
+
   // ---- drag to reorder ----------------------------------------------------
   const beginDrag = useCallback(
     (from: number, e: React.PointerEvent) => {
@@ -548,6 +584,7 @@ export default function EditorOverlay({ slug, main }: Props) {
       if (!a || !p || !domInSync()) return
       void endSessionRef.current(true)
       setMenu(null)
+      setSelected(null)
 
       const mainRect = main.getBoundingClientRect()
       const rects = Array.from(a.children).map((el) => {
@@ -635,9 +672,20 @@ export default function EditorOverlay({ slug, main }: Props) {
   const deleteBlock = (index: number) => {
     setMenu(null)
     setHovered(null)
+    setSelected(null)
     void (async () => {
       await endSessionRef.current(true)
       await save({ type: 'delete', index }, false)
+    })()
+  }
+
+  const duplicateBlock = (index: number) => {
+    setMenu(null)
+    setHovered(null)
+    setSelected(null)
+    void (async () => {
+      await endSessionRef.current(true)
+      await save({ type: 'duplicate', index }, false)
     })()
   }
 
@@ -651,6 +699,23 @@ export default function EditorOverlay({ slug, main }: Props) {
       handles = {
         top: r.top - mainRect.top + main.scrollTop + 2,
         left: r.left - mainRect.left - 52,
+      }
+    }
+  }
+
+  // Notion-style blue highlight: on the selected block, or the grip-menu's block
+  const highlightIx = selected ?? (menu?.kind === 'grip' ? menu.index : null)
+  let highlight: { top: number; left: number; width: number; height: number } | null = null
+  if (highlightIx !== null) {
+    const el = blockElOf(main, highlightIx)
+    if (el) {
+      const mainRect = main.getBoundingClientRect()
+      const r = el.getBoundingClientRect()
+      highlight = {
+        top: r.top - mainRect.top + main.scrollTop - 3,
+        left: r.left - mainRect.left - 6,
+        width: r.width + 12,
+        height: r.height + 6,
       }
     }
   }
@@ -702,7 +767,9 @@ export default function EditorOverlay({ slug, main }: Props) {
           </button>
           <button
             title="Drag to move · click for actions"
-            onPointerDown={(e) => beginDrag(hovered, e)}
+            onPointerDown={(e) => {
+              if (e.button === 0) beginDrag(hovered, e)
+            }}
             onClick={(e) => {
               const mainRect = main.getBoundingClientRect()
               setMenu({
@@ -710,6 +777,16 @@ export default function EditorOverlay({ slug, main }: Props) {
                 index: hovered,
                 x: e.clientX - mainRect.left,
                 y: e.clientY - mainRect.top + main.scrollTop + 12,
+              })
+            }}
+            onContextMenu={(e) => {
+              e.preventDefault()
+              const mainRect = main.getBoundingClientRect()
+              setMenu({
+                kind: 'grip',
+                index: hovered,
+                x: e.clientX - mainRect.left,
+                y: e.clientY - mainRect.top + main.scrollTop + 4,
               })
             }}
             className="flex size-6 cursor-grab items-center justify-center rounded transition-colors hover:bg-accent hover:text-foreground active:cursor-grabbing"
@@ -756,6 +833,15 @@ export default function EditorOverlay({ slug, main }: Props) {
         </div>
       )}
 
+      {/* selection / grip-menu highlight */}
+      {highlight && (
+        <div
+          data-nb-ui
+          className="pointer-events-none absolute z-30 rounded-md bg-blue-500/15"
+          style={highlight}
+        />
+      )}
+
       {/* grip menu */}
       {menu && menu.kind === 'grip' && (
         <div
@@ -765,11 +851,20 @@ export default function EditorOverlay({ slug, main }: Props) {
         >
           <button
             onMouseDown={(e) => e.preventDefault()}
+            onClick={() => duplicateBlock(menu.index)}
+            className="flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left text-sm transition-colors hover:bg-accent"
+          >
+            <CopyIcon className="size-4 text-muted-foreground" />
+            Duplicate
+          </button>
+          <button
+            onMouseDown={(e) => e.preventDefault()}
             onClick={() => deleteBlock(menu.index)}
             className="flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left text-sm text-destructive transition-colors hover:bg-accent"
           >
             <Trash2 className="size-4" />
             Delete
+            <span className="ml-auto text-[11px] text-muted-foreground">⌫</span>
           </button>
         </div>
       )}

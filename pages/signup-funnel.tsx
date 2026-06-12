@@ -7,6 +7,8 @@ export default function SignupFunnel() {
     <Page title="Signup funnel investigation">
       <h1>Signup funnel investigation</h1>
 
+      <p>Conversion moved <Stat metric={signupConversion} format="percent-change" /> after the pricing release — almost entirely in Chrome. cc <Mention user="marius" /></p>
+
       <Funnel
         steps={[
           { event: '$pageview', url: '/signup' },
@@ -15,8 +17,6 @@ export default function SignupFunnel() {
         ]}
         breakdown="$browser"
       />
-
-      <p>Conversion moved <Stat metric={signupConversion} format="percent-change" /> after the pricing release — almost entirely in Chrome. cc <Mention user="marius" /></p>
 
       <h3>another heading</h3>
 
@@ -28,10 +28,6 @@ export default function SignupFunnel() {
         The drop tracks the new pricing modal. Next: pull a replay sample of Chrome sessions
         that abandoned between steps 2 and 3.
       </Note>
-
-      <p>z;lrjgnz;fdjkgn d;zjgnzxf;jgn</p>
-
-      <p></p>
     </Page>
   )
 }
