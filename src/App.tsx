@@ -69,6 +69,12 @@ function Workspace() {
     try {
       const page = await (await fetch(`/__editor/page?slug=${encodeURIComponent(current.slug)}`)).json()
       const roomId = await createRoom(page.source)
+      // mirror the room back into the .tsx file (durability + agents/git see edits)
+      await fetch('/__editor/mirror', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ slug: current.slug, roomId }),
+      })
       location.href = `/${current.slug}?room=${roomId}` // enter the room (full editor + room bar)
     } catch (e) {
       console.error('[share] failed', e)

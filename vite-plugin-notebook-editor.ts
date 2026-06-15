@@ -253,6 +253,43 @@ export function notebookEditor(): Plugin {
         }
       }
 
+      // -----------------------------------------------------------------------
+      // Room mirror — the workspace is a peer of the relay. The room's value is
+      // the page's TSX source, so keeping the file in sync is just write/send:
+      // relay edits → write the .tsx (agents + git see room edits); local file
+      // edits → send the new source to the room. The file stays the durable
+      // source of truth; the relay is the live transport.
+      // -----------------------------------------------------------------------
+      type RelaySocket = {
+        readyState: number
+        send(data: string): void
+        addEventListener(type: string, cb: (e: { data: string }) => void): void
+      }
+      const RELAY_WS = `ws://localhost:${process.env.RELAY_PORT ?? 8787}`
+      const mirrors = new Map<string, { ws: RelaySocket; file: string; version: number }>()
+      const mirrorOf = (file: string) => [...mirrors.values()].find((m) => m.file === file)
+
+      const startMirror = (file: string, roomId: string) => {
+        if (mirrors.has(roomId)) return
+        const WS = (globalThis as unknown as { WebSocket: new (url: string) => RelaySocket }).WebSocket
+        const ws = new WS(RELAY_WS)
+        const m = { ws, file, version: 0 }
+        mirrors.set(roomId, m)
+        ws.addEventListener('open', () =>
+          ws.send(JSON.stringify({ type: 'join', room: roomId, user: { name: 'workspace', color: '' } }))
+        )
+        ws.addEventListener('message', (e) => {
+          const msg = JSON.parse(e.data) as { type: string; version?: number; source?: string }
+          if (msg.type === 'welcome' || msg.type === 'edit' || msg.type === 'reject') {
+            if (typeof msg.version === 'number') m.version = msg.version
+            if (typeof msg.source === 'string') void writePage(file, msg.source)
+          }
+        })
+        ws.addEventListener('close', () => mirrors.delete(roomId))
+        ws.addEventListener('error', () => {})
+        console.log(`[mirror] ${path.basename(file)} ⟷ room ${roomId}`)
+      }
+
       // Foreign writes (agent, IDE) become undoable 'external' history entries.
       // Runs in the local process, so it works even with no tab open.
       server.watcher.on('change', (file: string) => {
@@ -262,6 +299,11 @@ export function notebookEditor(): Plugin {
           const prev = lastSeen.get(file)
           lastSeen.set(file, content)
           if (prev === undefined || prev === content) return // our write, or unknown base
+          // a genuine local edit (agent / IDE) of a mirrored page → push to the room
+          const m = mirrorOf(file)
+          if (m && m.ws.readyState === 1) {
+            m.ws.send(JSON.stringify({ type: 'edit', baseVersion: m.version, source: content }))
+          }
           const slug = path.relative(pagesDir, file).replace(/\.tsx$/, '')
           const histFile = historyFileFor(slug)
           const h = await readHistory(histFile)
@@ -308,6 +350,15 @@ export function notebookEditor(): Plugin {
             if (!page) return respond(400, { error: 'bad slug' })
             const source = await fs.readFile(page.file, 'utf8')
             return respond(200, extractDoc(source, page.slug))
+          }
+
+          // mirror a room ⟷ this page's file (the workspace joins as a peer)
+          if (req.method === 'POST' && url.pathname === '/mirror') {
+            const body = JSON.parse(await readBody(req)) as { slug?: string; roomId?: string }
+            const page = resolvePage(body.slug)
+            if (!page || !body.roomId) return respond(400, { error: 'bad request' })
+            startMirror(page.file, body.roomId)
+            return respond(200, { ok: true })
           }
 
           if (req.method === 'POST' && url.pathname === '/apply') {
