@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { useBlockEdit } from '@/src/collab/blockEdit'
 import { ChartColumn, ChartLine, ChartPie, Loader2, Play, TableProperties } from 'lucide-react'
 import { Bar, BarChart, CartesianGrid, Cell, Line, LineChart, Pie, PieChart, XAxis, YAxis } from 'recharts'
 import {
@@ -298,17 +299,27 @@ export function Query({ sql, title, chart = 'table', x, y }: QueryProps) {
     return () => window.clearTimeout(t)
   }, [sql, run])
 
-  const saveProp = useCallback(async (name: string, value: string, defer: boolean) => {
-    if (!import.meta.env.DEV || !rootRef.current) return
-    setSaveState('saving')
-    try {
-      await savePropToSource(rootRef.current, name, value, defer)
-      if (defer) savedSinceFocus.current = true
-    } catch (e) {
-      console.warn('[Query] save failed:', e)
-    }
-    setSaveState('saved')
-  }, [])
+  // in a relay room, prop writes ride the wire (setProp op) instead of
+  // splicing the .tsx file — same prop, different transport
+  const roomEdit = useBlockEdit()
+  const saveProp = useCallback(
+    async (name: string, value: string, defer: boolean) => {
+      if (roomEdit) {
+        roomEdit.emitProp(name, value)
+        return
+      }
+      if (!import.meta.env.DEV || !rootRef.current) return
+      setSaveState('saving')
+      try {
+        await savePropToSource(rootRef.current, name, value, defer)
+        if (defer) savedSinceFocus.current = true
+      } catch (e) {
+        console.warn('[Query] save failed:', e)
+      }
+      setSaveState('saved')
+    },
+    [roomEdit]
+  )
 
   const onChange = (value: string) => {
     setDraft(value)
@@ -352,8 +363,8 @@ export function Query({ sql, title, chart = 'table', x, y }: QueryProps) {
     }
     await run(draft)
     await saveProp('sql', draft, true)
-    flushSource()
-  }, [draft, run, saveProp])
+    if (!roomEdit) flushSource() // file mode only; in a room the op already synced
+  }, [draft, run, saveProp, roomEdit])
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {

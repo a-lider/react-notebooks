@@ -1,14 +1,14 @@
 import { useState } from 'react'
 import { Check, Copy, Users } from 'lucide-react'
 import { useRoom } from './useRoom'
-import { PageEditor } from '../PageEditor'
+import { RenderDoc } from './RenderDoc'
 
 /**
- * Shared mode = the exact local editing experience, plus a room bar.
- * Editing is the real file-backed editor (so every gesture works and looks
- * identical); two local tabs sync through the shared workspace file +
- * live-reload. The relay provides presence + the link (and carries edits to
- * remote peers later).
+ * Shared mode = the notebook rendered from the relay's block tree (SDUI), with
+ * a room bar. Editing emits protocol ops over the relay, so a remote peer with
+ * no repo / file / dev server can render and edit — the relay is the edit
+ * transport, not the local file. (The local Workspace still uses the
+ * file-backed editor; this is the cloud path.)
  */
 export function RoomView({
   roomId,
@@ -19,7 +19,7 @@ export function RoomView({
   slug: string
   onLeave: () => void
 }) {
-  const { status, peers } = useRoom(roomId)
+  const { status, peers, doc, sendOp } = useRoom(roomId)
   const [copied, setCopied] = useState(false)
 
   const shareUrl = `${location.origin}/${slug}?room=${roomId}`
@@ -44,8 +44,7 @@ export function RoomView({
         >
           {status}
         </span>
-        {/* the editor's save status portals in here */}
-        <span id="nb-status-slot" className="flex items-center" />
+        <span className="text-muted-foreground">{doc?.title ?? slug}</span>
 
         <span className="ml-auto flex items-center gap-1.5 text-muted-foreground">
           <Users className="size-3.5" />
@@ -77,7 +76,17 @@ export function RoomView({
         </button>
       </header>
 
-      <PageEditor slug={slug} />
+      <main className="flex-1 overflow-y-auto">
+        {doc ? (
+          <RenderDoc doc={doc} sendOp={sendOp} editable={status === 'connected'} />
+        ) : (
+          <div className="px-10 py-12 text-sm text-muted-foreground">
+            {status === 'error' || status === 'closed'
+              ? 'Could not reach the room. Is the relay running?'
+              : 'Joining the room…'}
+          </div>
+        )}
+      </main>
     </div>
   )
 }
