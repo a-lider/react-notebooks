@@ -30,12 +30,19 @@ export async function createRoom(doc: PageDoc): Promise<string> {
 export class CollabClient {
   private ws: WebSocket
   private h: RoomHandlers
+  private queue: ClientMsg[] = []
+  private open = false
   constructor(roomId: string, handlers: RoomHandlers) {
     this.h = handlers
     this.h.onStatus('connecting')
     this.ws = new WebSocket(RELAY_WS)
     const user = { name: NAMES[Math.floor(Math.random() * NAMES.length)], color: '' }
-    this.ws.onopen = () => this.send({ type: 'join', room: roomId, user })
+    this.ws.onopen = () => {
+      this.open = true
+      this.raw({ type: 'join', room: roomId, user })
+      for (const m of this.queue) this.raw(m) // flush anything sent before connect
+      this.queue = []
+    }
     this.ws.onclose = () => this.h.onStatus('closed')
     this.ws.onerror = () => this.h.onStatus('error')
     this.ws.onmessage = (e) => {
@@ -61,8 +68,14 @@ export class CollabClient {
     }
   }
 
-  private send(msg: ClientMsg) {
+  private raw(msg: ClientMsg) {
     if (this.ws.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify(msg))
+  }
+
+  /** Queue until the socket is open, then flush — no silently-dropped ops. */
+  private send(msg: ClientMsg) {
+    if (this.open) this.raw(msg)
+    else this.queue.push(msg)
   }
 
   sendOp(baseVersion: number, op: Op) {

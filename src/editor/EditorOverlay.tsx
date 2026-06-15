@@ -1002,16 +1002,19 @@ export default function EditorOverlay({ slug, main }: Props) {
     saving: 'bg-sky-500',
   }
 
+  const statusSlot = typeof document !== 'undefined' ? document.getElementById('nb-status-slot') : null
+
   return createPortal(
     <>
-      {/* save status — top right */}
-      <div
-        data-nb-ui
-        className="fixed right-4 top-4 z-50 flex items-center gap-1.5 rounded-full border bg-background/90 px-3 py-1 text-xs text-muted-foreground shadow-sm backdrop-blur"
-      >
-        <span className={`size-1.5 rounded-full ${statusDot[status]}`} />
-        {statusLabel[status]}
-      </div>
+      {/* save status — plain text in the shared top-right row (next to Share) */}
+      {statusSlot &&
+        createPortal(
+          <span data-nb-ui className="flex items-center gap-1.5 text-xs text-muted-foreground">
+            <span className={`size-1.5 rounded-full ${statusDot[status]}`} />
+            {statusLabel[status]}
+          </span>,
+          statusSlot
+        )}
 
       {/* left-side handles */}
       {handles && hovered !== null && (

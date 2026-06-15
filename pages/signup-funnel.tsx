@@ -5,9 +5,11 @@ import { signups, signupConversion } from '@/metrics/growth'
 export default function SignupFunnel() {
   return (
     <Page title="Signup funnel investigation">
-      <h1>Signup funnel</h1>
+      <h1>Signup funnel (room test 2)</h1>
 
       <p>Conversion moved <Stat metric={signupConversion} format="percent-change" /> after the pricing release — almost entirely in Chrome. cc <Mention user="marius" /></p>
+
+      <p></p>
 
       <Funnel
         steps={[
@@ -30,7 +32,10 @@ GROUP BY browser ORDER BY users DESC`} />
 
       <Note author="alex">The drop tracks the new pricing modal. Next: pull a replay sample of Chrome sessions that abandoned between steps 2 and 3.</Note>
 
-      <h2>kjhgjglooohgfdfghjkl;</h2>
+      <Query sql={`select
+`} />
+
+      <p></p>
     </Page>
   )
 }

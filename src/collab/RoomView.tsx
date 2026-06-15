@@ -1,14 +1,28 @@
 import { useState } from 'react'
-import { Check, Copy, Link2, Users } from 'lucide-react'
+import { Check, Copy, Users } from 'lucide-react'
 import { useRoom } from './useRoom'
-import { RoomPage } from './RoomPage'
+import { PageEditor } from '../PageEditor'
 
-/** The shared-notebook screen: a header bar + the synced page. */
-export function RoomView({ roomId, onLeave }: { roomId: string; onLeave: () => void }) {
-  const { doc, status, peers, sendOp } = useRoom(roomId)
+/**
+ * Shared mode = the exact local editing experience, plus a room bar.
+ * Editing is the real file-backed editor (so every gesture works and looks
+ * identical); two local tabs sync through the shared workspace file +
+ * live-reload. The relay provides presence + the link (and carries edits to
+ * remote peers later).
+ */
+export function RoomView({
+  roomId,
+  slug,
+  onLeave,
+}: {
+  roomId: string
+  slug: string
+  onLeave: () => void
+}) {
+  const { status, peers } = useRoom(roomId)
   const [copied, setCopied] = useState(false)
 
-  const shareUrl = `${location.origin}/?room=${roomId}`
+  const shareUrl = `${location.origin}/${slug}?room=${roomId}`
   const copy = () => {
     void navigator.clipboard.writeText(shareUrl)
     setCopied(true)
@@ -17,12 +31,10 @@ export function RoomView({ roomId, onLeave }: { roomId: string; onLeave: () => v
 
   return (
     <div className="flex h-screen flex-col bg-background text-foreground">
-      <header className="flex items-center gap-3 border-b px-4 py-2 text-sm">
-        <Link2 className="size-4 text-muted-foreground" />
-        <span className="font-medium">{doc?.title ?? 'Shared notebook'}</span>
+      <header className="flex items-center gap-2.5 border-b px-4 py-2 text-sm">
         <span
           className={[
-            'rounded-full px-2 py-0.5 text-[11px] font-medium',
+            'rounded-full px-2.5 py-0.5 text-[11px] font-medium',
             status === 'connected'
               ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400'
               : status === 'error' || status === 'closed'
@@ -32,16 +44,18 @@ export function RoomView({ roomId, onLeave }: { roomId: string; onLeave: () => v
         >
           {status}
         </span>
+        {/* the editor's save status portals in here */}
+        <span id="nb-status-slot" className="flex items-center" />
 
         <span className="ml-auto flex items-center gap-1.5 text-muted-foreground">
           <Users className="size-3.5" />
           {peers.length}
-          <span className="ml-1 flex -space-x-1">
+          <span className="ml-1 flex -space-x-1.5">
             {peers.slice(0, 6).map((p) => (
               <span
                 key={p.id}
                 title={p.user?.name}
-                className="inline-block size-4 rounded-full border border-background"
+                className="inline-block size-4 rounded-full border-2 border-background"
                 style={{ background: p.user?.color || 'var(--chart-2)' }}
               />
             ))}
@@ -63,17 +77,7 @@ export function RoomView({ roomId, onLeave }: { roomId: string; onLeave: () => v
         </button>
       </header>
 
-      <main className="flex-1 overflow-y-auto">
-        {doc ? (
-          <RoomPage blocks={doc.blocks} editable={status === 'connected'} onOp={sendOp} />
-        ) : (
-          <div className="px-10 py-12 text-sm text-muted-foreground">
-            {status === 'error' || status === 'closed'
-              ? 'Could not reach the collaboration relay. Is it running on :8787?'
-              : 'Joining room…'}
-          </div>
-        )}
-      </main>
+      <PageEditor slug={slug} />
     </div>
   )
 }
