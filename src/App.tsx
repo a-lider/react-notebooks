@@ -67,8 +67,8 @@ function Workspace() {
     if (!current) return
     setSharing(true)
     try {
-      const doc = await (await fetch(`/__editor/doc?slug=${encodeURIComponent(current.slug)}`)).json()
-      const roomId = await createRoom(doc)
+      const page = await (await fetch(`/__editor/page?slug=${encodeURIComponent(current.slug)}`)).json()
+      const roomId = await createRoom(page.source)
       location.href = `/${current.slug}?room=${roomId}` // enter the room (full editor + room bar)
     } catch (e) {
       console.error('[share] failed', e)

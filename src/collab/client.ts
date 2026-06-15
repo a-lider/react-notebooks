@@ -1,26 +1,27 @@
 /**
- * CollabClient — the WebSocket half of the SyncProvider, talking the protocol
- * to the relay. A thin transport; the hook (useRoom) holds the doc + version.
+ * CollabClient — the WebSocket half of the room, talking the protocol to the
+ * relay. A thin transport; the hook (useRoom) holds the source + version. The
+ * synced value is the page's TSX source.
  */
 import { RELAY_HTTP, RELAY_WS } from './config'
-import type { ClientMsg, Op, PageDoc, Peer, ServerMsg } from '@/packages/protocol'
+import type { ClientMsg, Peer, ServerMsg } from '@/packages/protocol'
 
 export interface RoomHandlers {
-  onWelcome: (doc: PageDoc, version: number, self: string) => void
-  onOp: (version: number, op: Op, by: string) => void
-  onReject: (doc: PageDoc, version: number) => void
+  onWelcome: (source: string, version: number, self: string) => void
+  onEdit: (version: number, source: string, by: string) => void
+  onReject: (source: string, version: number) => void
   onPresence: (peers: Peer[]) => void
   onStatus: (status: 'connecting' | 'connected' | 'closed' | 'error') => void
 }
 
 const NAMES = ['Otter', 'Heron', 'Lynx', 'Wren', 'Fox', 'Ibis', 'Vole', 'Stoat']
 
-/** Seed a room from a page doc; returns the new room id. */
-export async function createRoom(doc: PageDoc): Promise<string> {
+/** Seed a room from a page's TSX source; returns the new room id. */
+export async function createRoom(source: string): Promise<string> {
   const res = await fetch(`${RELAY_HTTP}/rooms`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ doc }),
+    body: JSON.stringify({ source }),
   })
   if (!res.ok) throw new Error(`relay: ${res.status}`)
   const { roomId } = (await res.json()) as { roomId: string }
@@ -50,13 +51,13 @@ export class CollabClient {
       switch (m.type) {
         case 'welcome':
           this.h.onStatus('connected')
-          this.h.onWelcome(m.doc, m.version, m.self)
+          this.h.onWelcome(m.source, m.version, m.self)
           break
-        case 'op':
-          this.h.onOp(m.version, m.op, m.by)
+        case 'edit':
+          this.h.onEdit(m.version, m.source, m.by)
           break
         case 'reject':
-          this.h.onReject(m.doc, m.version)
+          this.h.onReject(m.source, m.version)
           break
         case 'presence':
           this.h.onPresence(m.peers)
@@ -72,14 +73,15 @@ export class CollabClient {
     if (this.ws.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify(msg))
   }
 
-  /** Queue until the socket is open, then flush — no silently-dropped ops. */
+  /** Queue until the socket is open, then flush — no silently-dropped edits. */
   private send(msg: ClientMsg) {
     if (this.open) this.raw(msg)
     else this.queue.push(msg)
   }
 
-  sendOp(baseVersion: number, op: Op) {
-    this.send({ type: 'op', baseVersion, op })
+  /** Submit a new full source, based on the version we last saw. */
+  sendEdit(baseVersion: number, source: string) {
+    this.send({ type: 'edit', baseVersion, source })
   }
 
   close() {

@@ -1,18 +1,19 @@
 /**
- * Joins a room and holds its synced doc. Ops apply on server confirmation
- * (the relay echoes every op, including your own, with the authoritative
- * version) — so local and remote converge through one path. Stale base →
- * the relay rejects and we resync (reject-and-refetch, the v1 concurrency
- * model). No optimistic apply, no double-apply.
+ * Joins a room and holds its synced TSX source. Edits apply on server
+ * confirmation: the relay echoes every edit (including your own) with the
+ * authoritative version + source, so local and remote converge through one
+ * path — we just adopt the source the relay sends. Stale base → reject, and
+ * we resync to the relay's source (reject-and-refetch, the v2 model). The
+ * source IS the state; there's nothing to merge.
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { applyOp, type Op, type PageDoc, type Peer } from '@/packages/protocol'
+import type { Peer } from '@/packages/protocol'
 import { CollabClient } from './client'
 
 type Status = 'connecting' | 'connected' | 'closed' | 'error'
 
 interface RoomState {
-  doc: PageDoc | null
+  source: string | null
   version: number
   status: Status
   peers: Peer[]
@@ -21,7 +22,7 @@ interface RoomState {
 
 export function useRoom(roomId: string) {
   const [state, setState] = useState<RoomState>({
-    doc: null,
+    source: null,
     version: 0,
     status: 'connecting',
     peers: [],
@@ -33,17 +34,17 @@ export function useRoom(roomId: string) {
   useEffect(() => {
     const client = new CollabClient(roomId, {
       onStatus: (status) => setState((s) => ({ ...s, status })),
-      onWelcome: (doc, version, self) => {
+      onWelcome: (source, version, self) => {
         versionRef.current = version
-        setState((s) => ({ ...s, doc, version, self }))
+        setState((s) => ({ ...s, source, version, self }))
       },
-      onOp: (version, op) => {
+      onEdit: (version, source) => {
         versionRef.current = version
-        setState((s) => (s.doc ? { ...s, version, doc: { ...s.doc, blocks: applyOp(s.doc.blocks, op) } } : s))
+        setState((s) => ({ ...s, version, source }))
       },
-      onReject: (doc, version) => {
+      onReject: (source, version) => {
         versionRef.current = version
-        setState((s) => ({ ...s, doc, version }))
+        setState((s) => ({ ...s, source, version }))
       },
       onPresence: (peers) => setState((s) => ({ ...s, peers })),
     })
@@ -51,9 +52,9 @@ export function useRoom(roomId: string) {
     return () => client.close()
   }, [roomId])
 
-  const sendOp = useCallback((op: Op) => {
-    clientRef.current?.sendOp(versionRef.current, op)
+  const sendEdit = useCallback((source: string) => {
+    clientRef.current?.sendEdit(versionRef.current, source)
   }, [])
 
-  return { ...state, sendOp }
+  return { ...state, sendEdit }
 }

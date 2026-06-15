@@ -1,21 +1,23 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Plus, Trash2 } from 'lucide-react'
-import type { BlockNode, Op, PageDoc } from '@/packages/protocol'
 import { Note, Stat, Mention, Callout } from '@/components/notebook'
 import { Funnel, Trend, Query, DataTable } from '@/components/analytics'
 import { TEXT_STYLES } from '@/components/notebook/styles'
+import { applyEditOp, extractDoc, type BlockNode, type EditOp } from '@/src/editor/tsx-engine'
 import { BlockEditContext } from './blockEdit'
 import { resolveProps } from './refs'
 
 /**
- * The cloud renderer — Server-Driven UI. It draws the relay's block tree
- * (BlockNode[]) against the components the app already ships, instead of
- * importing a page module. A remote peer with no repo, no file, and no Vite
- * dev server renders the notebook from this + the doc on the wire.
+ * The cloud renderer. The room's value is the page's TSX source; this parses it
+ * into a throwaway block tree (extractDoc) and renders it against the components
+ * the app already ships. A remote peer with no repo / file / dev server renders
+ * the notebook from this + the source on the wire.
  *
- * Editing emits protocol ops (setText / setProp / insert / delete) addressed
- * by the block's path; the relay echoes them and every peer re-renders from
- * the converged doc. This is the edit transport the file+HMR trick can't be.
+ * Editing splices the source with the TSX engine (applyEditOp) and sends the
+ * new source; the relay echoes it and every peer re-parses + re-renders. Blocks
+ * are addressed by their flat index — top-level children with <Columns>
+ * transparent — exactly the order extractBlocks/applyOp use, computed here as
+ * we walk so it matches.
  */
 
 const COMPONENTS: Record<string, React.ComponentType<Record<string, unknown>>> = {
@@ -35,118 +37,145 @@ const TEXT_TAGS = new Set<string>(['h1', 'h2', 'h3', 'h4', 'p', 'blockquote'])
 const TEXT_BODY = new Set(['Note', 'Callout'])
 
 export function RenderDoc({
-  doc,
-  sendOp,
+  source,
+  slug,
+  sendEdit,
   editable,
 }: {
-  doc: PageDoc
-  sendOp: (op: Op) => void
+  source: string
+  slug: string
+  sendEdit: (source: string) => void
   editable: boolean
 }) {
+  const doc = useMemo(() => {
+    try {
+      return extractDoc(source, slug)
+    } catch {
+      return null
+    }
+  }, [source, slug])
+
+  // splice the current source with one structured op and ship the new source
+  const edit = useCallback(
+    (op: EditOp) => {
+      try {
+        sendEdit(applyEditOp(source, op))
+      } catch (e) {
+        console.warn('[room] edit failed', e)
+      }
+    },
+    [source, sendEdit]
+  )
+
   useEffect(() => {
-    document.title = `${doc.title} · react-notebooks`
-  }, [doc.title])
+    if (doc) document.title = `${doc.title} · react-notebooks`
+  }, [doc])
+
+  if (!doc) {
+    return (
+      <div className="px-10 py-12 text-sm text-muted-foreground">
+        Couldn't parse the page source.
+      </div>
+    )
+  }
+
+  // walk the tree assigning each leaf its flat index (columns transparent),
+  // synchronously during this render so the indices match the engine's
+  const counter = { n: 0 }
+  const renderLeaf = (node: BlockNode, key: number | string) => {
+    const flat = counter.n++
+    return <BlockShell key={key} node={node} index={flat} edit={edit} editable={editable} />
+  }
+  const renderBlocks = (nodes: BlockNode[]): ReactNode =>
+    nodes.map((node, i) => {
+      if (node.type === 'Columns') {
+        const cols = node.children ?? []
+        return (
+          <div
+            key={i}
+            data-nb-columns
+            className="grid items-start gap-6"
+            style={{ gridTemplateColumns: `repeat(${Math.max(cols.length, 1)}, minmax(0, 1fr))` }}
+          >
+            {cols.map((col, ci) => (
+              <div key={ci} data-nb-column className={`min-w-0 space-y-5 ${TEXT_STYLES}`}>
+                {(col.children ?? []).map((leaf, li) => renderLeaf(leaf, li))}
+              </div>
+            ))}
+          </div>
+        )
+      }
+      return renderLeaf(node, i)
+    })
+
+  const body = renderBlocks(doc.blocks)
+  const lastIndex = counter.n - 1
 
   return (
     <article className={`mx-auto max-w-3xl space-y-5 px-8 py-10 ${TEXT_STYLES}`}>
-      {doc.blocks.map((node, i) => (
-        <BlockShell key={i} node={node} path={[i]} sendOp={sendOp} editable={editable} />
-      ))}
-      {editable && (
+      {body}
+      {editable && lastIndex >= 0 && (
         <AddButton
-          onClick={() =>
-            sendOp({ t: 'insert', parentPath: [], index: doc.blocks.length, node: emptyParagraph() })
-          }
           label="Add a block"
+          onClick={() => edit({ type: 'insert', afterIndex: lastIndex, kind: 'p', topLevel: true })}
         />
       )}
     </article>
   )
 }
 
-const emptyParagraph = (): BlockNode => ({ type: 'p', text: '' })
-
 /** A block + its hover controls (insert-after, delete) in the left gutter. */
 function BlockShell({
   node,
-  path,
-  sendOp,
+  index,
+  edit,
   editable,
 }: {
   node: BlockNode
-  path: number[]
-  sendOp: (op: Op) => void
+  index: number
+  edit: (op: EditOp) => void
   editable: boolean
 }) {
-  const parentPath = path.slice(0, -1)
-  const index = path[path.length - 1]
-
   return (
     <div className="group/blk relative">
       {editable && (
         <div className="absolute -left-9 top-0.5 flex flex-col gap-0.5 opacity-0 transition-opacity group-hover/blk:opacity-100">
           <GutterButton
             title="Add block below"
-            onClick={() =>
-              sendOp({ t: 'insert', parentPath, index: index + 1, node: emptyParagraph() })
-            }
+            onClick={() => edit({ type: 'insert', afterIndex: index, kind: 'p' })}
           >
             <Plus className="size-3.5" />
           </GutterButton>
-          <GutterButton title="Delete block" onClick={() => sendOp({ t: 'delete', path })}>
+          <GutterButton title="Delete block" onClick={() => edit({ type: 'delete', index })}>
             <Trash2 className="size-3.5" />
           </GutterButton>
         </div>
       )}
-      <RenderBlock node={node} path={path} sendOp={sendOp} editable={editable} />
+      <RenderBlock node={node} index={index} edit={edit} editable={editable} />
     </div>
   )
 }
 
 function RenderBlock({
   node,
-  path,
-  sendOp,
+  index,
+  edit,
   editable,
 }: {
   node: BlockNode
-  path: number[]
-  sendOp: (op: Op) => void
+  index: number
+  edit: (op: EditOp) => void
   editable: boolean
 }) {
-  // text blocks — inline-editable, emit setText
+  // text blocks — inline-editable, splice via replaceInner
   if (TEXT_TAGS.has(node.type)) {
     return (
       <EditableText
         tag={node.type as TextTag}
         text={node.text ?? ''}
         editable={editable}
-        onCommit={(value) => sendOp({ t: 'setText', path, value })}
+        onCommit={(value) => edit({ type: 'replaceInner', index, text: value })}
       />
-    )
-  }
-
-  // containers — recurse into children (columns)
-  if (node.type === 'Columns' || node.type === 'Column') {
-    const children: ReactNode = (node.children ?? []).map((child, i) => (
-      <BlockShell key={i} node={child} path={[...path, i]} sendOp={sendOp} editable={editable} />
-    ))
-    if (node.type === 'Columns') {
-      const count = Math.max(node.children?.length ?? 1, 1)
-      return (
-        <div
-          data-nb-columns
-          className="grid items-start gap-6"
-          style={{ gridTemplateColumns: `repeat(${count}, minmax(0, 1fr))` }}
-        >
-          {children}
-        </div>
-      )
-    }
-    return (
-      <div data-nb-column className={`min-w-0 space-y-5 ${TEXT_STYLES}`}>
-        {children}
-      </div>
     )
   }
 
@@ -160,26 +189,28 @@ function RenderBlock({
     )
   }
   const props = resolveProps(node.props)
-  const body = TEXT_BODY.has(node.type) ? node.text : undefined
+  const text = TEXT_BODY.has(node.type) ? node.text : undefined
 
-  // bind a path-scoped prop emitter so <Query> can sync its SQL through the
-  // relay (setProp) instead of writing the file
+  // bind a flat-index prop emitter so <Query> can sync its SQL through the
+  // relay (a setProp splice) instead of writing the file
   return (
     <BlockEditContext.Provider
       value={
-        editable ? { emitProp: (name, value) => sendOp({ t: 'setProp', path, key: name, value }) } : null
+        editable
+          ? { emitProp: (name, value) => edit({ type: 'setProp', index, name, value: String(value) }) }
+          : null
       }
     >
-      <Comp {...props}>{body}</Comp>
+      <Comp {...props}>{text}</Comp>
     </BlockEditContext.Provider>
   )
 }
 
 /**
  * A contentEditable text element. The DOM owns the text while editing; React
- * never re-renders the children (they're captured once at mount), so the caret
- * is never disturbed. Remote edits arrive as a changed `text` prop and are
- * applied imperatively, but only when this element isn't focused.
+ * never re-renders the children (captured once at mount), so the caret is never
+ * disturbed. Remote edits arrive as a changed `text` prop and are applied
+ * imperatively, but only when this element isn't focused.
  */
 function EditableText({
   tag: Tag,
@@ -197,7 +228,6 @@ function EditableText({
   const timer = useRef<number | null>(null)
   const [initial] = useState(text)
 
-  // adopt remote changes (and the echo of our own) when we're not the typist
   useEffect(() => {
     const el = node.current
     if (el && !focused.current && el.textContent !== text) el.textContent = text
@@ -251,7 +281,6 @@ function GutterButton({
   return (
     <button
       title={title}
-      // keep the editor's focus/caret while clicking a gutter control
       onMouseDown={(e) => e.preventDefault()}
       onClick={onClick}
       className="flex size-6 items-center justify-center rounded-md text-muted-foreground/70 transition-colors hover:bg-accent hover:text-foreground"

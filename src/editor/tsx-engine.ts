@@ -12,11 +12,29 @@
  */
 import { parse } from '@babel/parser'
 import type * as t from '@babel/types'
-import type { BlockNode, PageDoc } from '../../packages/protocol'
 
 // ---------------------------------------------------------------------------
 // Types (shared with the client + the dev plugin)
 // ---------------------------------------------------------------------------
+
+/**
+ * A renderable block tree — the throwaway view a client parses the source into
+ * to render it (RSC/SDUI-shaped). NOT a stored document: derived from the TSX
+ * on every change, never edited directly. References (metric={signups}) become
+ * { $ref: name }, resolved client-side against the metrics registry.
+ */
+export interface BlockNode {
+  type: string
+  text?: string
+  props?: Record<string, unknown>
+  children?: BlockNode[]
+}
+
+export interface PageDoc {
+  slug: string
+  title: string
+  blocks: BlockNode[]
+}
 
 export interface Span {
   start: number

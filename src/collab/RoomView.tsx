@@ -19,7 +19,7 @@ export function RoomView({
   slug: string
   onLeave: () => void
 }) {
-  const { status, peers, doc, sendOp } = useRoom(roomId)
+  const { status, peers, source, sendEdit } = useRoom(roomId)
   const [copied, setCopied] = useState(false)
 
   const shareUrl = `${location.origin}/${slug}?room=${roomId}`
@@ -44,7 +44,7 @@ export function RoomView({
         >
           {status}
         </span>
-        <span className="text-muted-foreground">{doc?.title ?? slug}</span>
+        <span className="text-muted-foreground">{slug}</span>
 
         <span className="ml-auto flex items-center gap-1.5 text-muted-foreground">
           <Users className="size-3.5" />
@@ -77,8 +77,13 @@ export function RoomView({
       </header>
 
       <main className="flex-1 overflow-y-auto">
-        {doc ? (
-          <RenderDoc doc={doc} sendOp={sendOp} editable={status === 'connected'} />
+        {source !== null ? (
+          <RenderDoc
+            source={source}
+            slug={slug}
+            sendEdit={sendEdit}
+            editable={status === 'connected'}
+          />
         ) : (
           <div className="px-10 py-12 text-sm text-muted-foreground">
             {status === 'error' || status === 'closed'
