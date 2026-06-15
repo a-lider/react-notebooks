@@ -1,4 +1,4 @@
-import { Page, Callout, Columns, Column } from '@/components/notebook'
+import { Page, Callout } from '@/components/notebook'
 import { Query } from '@/components/analytics'
 
 export default function Welcome() {

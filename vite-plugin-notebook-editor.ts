@@ -22,6 +22,7 @@ import crypto from 'node:crypto'
 import { parse } from '@babel/parser'
 import type * as t from '@babel/types'
 import type { Plugin, ViteDevServer } from 'vite'
+import type { BlockNode, PageDoc } from './packages/protocol'
 
 // ---------------------------------------------------------------------------
 // Types shared with the client (kept in sync by hand — small surface)
@@ -195,6 +196,103 @@ function extractBlocks(source: string): BlockInfo[] {
 
   for (const { el, top } of elementsInBlockOrder(page)) push(el, top)
   return out
+}
+
+// ---------------------------------------------------------------------------
+// Collaboration seed — parse a page into a renderable block-tree value
+// (the synced substrate). References (metric={signups}) become { $ref: name };
+// the client resolves them against the metrics registry.
+// ---------------------------------------------------------------------------
+
+const DOC_TEXT = new Set(['h1', 'h2', 'h3', 'h4', 'p', 'blockquote'])
+const DOC_CONTAINER = new Set(['Columns', 'Column'])
+const DOC_TEXTBOX = new Set(['Note', 'Callout'])
+
+function jsxInnerText(el: t.JSXElement): string {
+  return el.children
+    .filter((c): c is t.JSXText => c.type === 'JSXText')
+    .map((c) => c.value)
+    .join('')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function evalLiteral(node: t.Node | null | undefined): unknown {
+  if (!node) return undefined
+  switch (node.type) {
+    case 'StringLiteral':
+    case 'NumericLiteral':
+    case 'BooleanLiteral':
+      return node.value
+    case 'NullLiteral':
+      return null
+    case 'TemplateLiteral':
+      return node.expressions.length === 0
+        ? node.quasis.map((q) => q.value.cooked ?? q.value.raw).join('')
+        : undefined
+    case 'ArrayExpression':
+      return node.elements.map((e) => evalLiteral(e as t.Node))
+    case 'ObjectExpression': {
+      const obj: Record<string, unknown> = {}
+      for (const p of node.properties) {
+        if (p.type !== 'ObjectProperty') continue
+        const k =
+          p.key.type === 'Identifier' ? p.key.name : p.key.type === 'StringLiteral' ? p.key.value : null
+        if (k !== null) obj[k] = evalLiteral(p.value as t.Node)
+      }
+      return obj
+    }
+    case 'Identifier':
+      return { $ref: node.name } // a reference — resolved client-side
+    default:
+      return undefined
+  }
+}
+
+function jsxPropsValue(el: t.JSXElement): Record<string, unknown> {
+  const props: Record<string, unknown> = {}
+  for (const a of el.openingElement.attributes) {
+    if (a.type !== 'JSXAttribute' || a.name.type !== 'JSXIdentifier') continue
+    const name = a.name.name
+    if (!a.value) props[name] = true
+    else if (a.value.type === 'StringLiteral') props[name] = a.value.value
+    else if (a.value.type === 'JSXExpressionContainer') props[name] = evalLiteral(a.value.expression as t.Node)
+  }
+  return props
+}
+
+function toBlockNode(el: t.JSXElement): BlockNode | null {
+  const type = jsxName(el)
+  if (!type) return null
+  if (DOC_CONTAINER.has(type)) {
+    const children = el.children
+      .filter((c): c is t.JSXElement => c.type === 'JSXElement')
+      .map(toBlockNode)
+      .filter((n): n is BlockNode => n !== null)
+    return { type, children }
+  }
+  if (DOC_TEXTBOX.has(type)) return { type, props: jsxPropsValue(el), text: jsxInnerText(el) }
+  if (DOC_TEXT.has(type)) return { type, text: jsxInnerText(el) }
+  return { type, props: jsxPropsValue(el) } // a component (Trend, Query, …)
+}
+
+function extractDoc(source: string, slug: string): PageDoc {
+  const page = findPageElement(parseAst(source))
+  let title = slug
+  if (page) {
+    const t = page.openingElement.attributes.find(
+      (a): a is import('@babel/types').JSXAttribute =>
+        a.type === 'JSXAttribute' && a.name.type === 'JSXIdentifier' && a.name.name === 'title'
+    )
+    if (t?.value?.type === 'StringLiteral') title = t.value.value
+  }
+  const blocks = page
+    ? page.children
+        .filter((c): c is t.JSXElement => c.type === 'JSXElement')
+        .map(toBlockNode)
+        .filter((n): n is BlockNode => n !== null)
+    : []
+  return { slug, title, blocks }
 }
 
 // ---------------------------------------------------------------------------
@@ -796,6 +894,14 @@ export function notebookEditor(): Plugin {
             lastSeen.set(page.file, source)
             const h = await readHistory(historyFileFor(page.slug))
             return respond(200, payloadFor(page.slug, page.file, source, h))
+          }
+
+          // the collaboration seed: a page parsed into a block-tree value
+          if (req.method === 'GET' && url.pathname === '/doc') {
+            const page = resolvePage(url.searchParams.get('slug'))
+            if (!page) return respond(400, { error: 'bad slug' })
+            const source = await fs.readFile(page.file, 'utf8')
+            return respond(200, extractDoc(source, page.slug))
           }
 
           if (req.method === 'POST' && url.pathname === '/apply') {
