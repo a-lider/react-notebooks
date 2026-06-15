@@ -265,7 +265,13 @@ export function Query({ sql, title, chart = 'table', x, y }: QueryProps) {
   if (sql !== prevProps.sql || chart !== prevProps.chart || x !== prevProps.x || y !== prevProps.y) {
     setPrevProps({ sql, chart, x, y })
     setCfg({ chart, x, y })
-    if (sql !== prevProps.sql && !focused) setDraft(sql)
+    // a synced edit from a peer (or HMR) changed the query: adopt it and show
+    // the matching result. We only do this when this tab isn't the one typing,
+    // so a local editor never has its draft/output yanked out from under it.
+    if (sql !== prevProps.sql && !focused) {
+      setDraft(sql)
+      setResult(resultCache.get(sql) ?? null) // effect below re-runs on a cache miss
+    }
   }
   const [tab, setTab] = useState<'table' | 'chart'>(chart !== 'table' ? 'chart' : 'table')
 
@@ -283,13 +289,14 @@ export function Query({ sql, title, chart = 'table', x, y }: QueryProps) {
     }
   }, [])
 
-  // run once on mount so the page shows data, like any other block
+  // run when the query arrives or changes (mount, and synced peer edits) so the
+  // page always shows data for the current sql — keyed on `sql`, not mount, so a
+  // peer's edit re-runs here and the output follows the query.
   useEffect(() => {
     if (!sql.trim() || resultCache.has(sql)) return
     const t = window.setTimeout(() => void run(sql), 0)
     return () => window.clearTimeout(t)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [sql, run])
 
   const saveProp = useCallback(async (name: string, value: string, defer: boolean) => {
     if (!import.meta.env.DEV || !rootRef.current) return
@@ -335,12 +342,23 @@ export function Query({ sql, title, chart = 'table', x, y }: QueryProps) {
     }
   }, [])
 
+  // Run = execute + persist + sync. We run first (filling resultCache), then
+  // save the query and flush HMR so peers reload, adopt the new `sql`, and
+  // re-run it themselves — query and output both land on every tab.
+  const runQuery = useCallback(async () => {
+    if (saveTimer.current !== null) {
+      window.clearTimeout(saveTimer.current)
+      saveTimer.current = null
+    }
+    await run(draft)
+    await saveProp('sql', draft, true)
+    flushSource()
+  }, [draft, run, saveProp])
+
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
       e.preventDefault()
-      if (saveTimer.current !== null) window.clearTimeout(saveTimer.current)
-      void saveProp('sql', draft, true)
-      void run(draft)
+      void runQuery()
     } else if (e.key === 'Tab') {
       e.preventDefault()
       const ta = e.currentTarget
@@ -382,10 +400,7 @@ export function Query({ sql, title, chart = 'table', x, y }: QueryProps) {
           </span>
         )}
         <button
-          onClick={() => {
-            void saveProp('sql', draft, true)
-            void run(draft)
-          }}
+          onClick={() => void runQuery()}
           disabled={running}
           className="ml-auto flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium transition-colors hover:bg-accent disabled:opacity-50"
         >
