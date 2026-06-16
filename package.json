@@ -17,8 +17,8 @@
     "clsx": "^2.1.1",
     "lucide-react": "^1.18.0",
     "radix-ui": "^1.5.0",
-    "react": "^19.2.6",
-    "react-dom": "^19.2.6",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
     "recharts": "^3.8.0",
     "shadcn": "^4.11.0",
     "tailwind-merge": "^3.6.0",
@@ -29,16 +29,16 @@
     "@babel/parser": "^7.29.7",
     "@babel/types": "^7.29.7",
     "@eslint/js": "^10.0.1",
-    "@types/node": "^24.12.3",
-    "@types/react": "^19.2.14",
+    "@types/node": "^25.9.3",
+    "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
-    "@vitejs/plugin-react": "^6.0.1",
+    "@vitejs/plugin-react": "^6.0.2",
     "eslint": "^10.3.0",
     "eslint-plugin-react-hooks": "^7.1.1",
     "eslint-plugin-react-refresh": "^0.5.2",
     "globals": "^17.6.0",
     "typescript": "~6.0.2",
     "typescript-eslint": "^8.59.2",
-    "vite": "^8.0.12"
+    "vite": "^8.0.16"
   }
 }
