@@ -1,5 +1,5 @@
-import { Page, Stat, Columns, Column, Callout } from '@/components/notebook'
-import { Trend, DataTable, Query } from '@/components/analytics'
+import { Page, Stat, Columns, Column } from '@/components/notebook'
+import { Trend, DataTable } from '@/components/analytics'
 import { signups, signupConversion, weeklyActiveUsers } from '@/metrics/growth'
 import { week1Retention } from '@/metrics/retention'
 
@@ -38,15 +38,6 @@ export default function GrowthDashboard() {
           { channel: 'Paid social', signups: 489, conversion: '1.9%' },
         ]}
       />
-
-      <Callout>dfghjkl;'</Callout>
-
-      <p></p>
-
-      <Query sql={`SELECT * 
-FROM events
-where event = '$pageview'
-`} />
     </Page>
   )
 }

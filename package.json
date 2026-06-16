@@ -8,8 +8,7 @@
     "build": "tsc -b && vite build",
     "check": "tsc -b && eslint .",
     "lint": "eslint .",
-    "preview": "vite preview",
-    "tunnel": "ngrok http 5180"
+    "preview": "vite preview"
   },
   "dependencies": {
     "@fontsource-variable/geist": "^5.2.9",

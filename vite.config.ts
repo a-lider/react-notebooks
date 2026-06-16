@@ -9,22 +9,10 @@ import { notebookData } from './vite-plugin-data'
 export default defineConfig({
   plugins: [react(), tailwindcss(), notebookEditor(), notebookData()],
   server: {
-    // bind 0.0.0.0 so a hosted sandbox (CodeSandbox/Fly/tunnel) can proxy the
-    // dev server's preview — Vite binds localhost only by default
+    // bind 0.0.0.0 + accept the hostname so a hosted sandbox (CodeSandbox)
+    // can proxy the dev-server preview (Vite binds localhost only by default)
     host: true,
-    // accept the sandbox/tunnel hostname (CodeSandbox preview, cloudflared, …)
     allowedHosts: true,
-    // one tunnel, one origin — proxy the relay (ws + http) under /__relay so a
-    // remote peer reaches the relay, the SQL endpoint, and the editor API all
-    // through the same public URL. Strip the prefix; the relay serves at root.
-    proxy: {
-      '/__relay': {
-        target: 'http://localhost:8787',
-        ws: true,
-        changeOrigin: true,
-        rewrite: (p) => p.replace(/^\/__relay/, ''),
-      },
-    },
   },
   resolve: {
     // "@/" points at the repo root so content folders (pages/, components/,

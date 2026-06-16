@@ -1,19 +1,21 @@
-import { useEffect, useReducer, useState } from 'react'
-import { NotebookText, Share2 } from 'lucide-react'
+import { lazy, Suspense, useEffect, useState } from 'react'
+import { NotebookText } from 'lucide-react'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { pages } from './registry'
-import { PageEditor } from './PageEditor'
-import { RoomView } from './collab/RoomView'
-import { createRoom } from './collab/client'
-import { RELAY_HTTP } from './collab/config'
+import { ErrorBoundary } from './ErrorBoundary'
+
+// dev-only structured editor (vite-plugin-notebook-editor serves its API)
+const EditorOverlay = lazy(() => import('./editor/EditorOverlay'))
 
 function usePath(): [string, (slug: string) => void] {
   const [path, setPath] = useState(() => decodeURIComponent(location.pathname.slice(1)))
+
   useEffect(() => {
     const onPop = () => setPath(decodeURIComponent(location.pathname.slice(1)))
     window.addEventListener('popstate', onPop)
     return () => window.removeEventListener('popstate', onPop)
   }, [])
+
   const navigate = (slug: string) => {
     history.pushState(null, '', '/' + slug)
     setPath(slug)
@@ -22,66 +24,17 @@ function usePath(): [string, (slug: string) => void] {
 }
 
 export default function App() {
-  // Derive the room from the LIVE url every render (not mount-time state), so
-  // an HMR re-render can't transiently drop room mode and strip ?room.
-  const [, bump] = useReducer((x: number) => x + 1, 0)
-  useEffect(() => {
-    const onPop = () => bump()
-    window.addEventListener('popstate', onPop)
-    return () => window.removeEventListener('popstate', onPop)
-  }, [])
-
-  const roomId = new URLSearchParams(window.location.search).get('room')
-  if (roomId) {
-    // share links are /<slug>?room=<id> — the slug lives in the path so the
-    // page renders and <Query> can resolve its source; room mode = the local
-    // editor + a room bar.
-    const slug = decodeURIComponent(location.pathname.slice(1)) || pages[0]?.slug
-    return (
-      <RoomView
-        roomId={roomId}
-        slug={slug}
-        onLeave={() => {
-          history.pushState(null, '', '/' + slug)
-          bump()
-        }}
-      />
-    )
-  }
-  return <Workspace />
-}
-
-function Workspace() {
   const [path, navigate] = usePath()
-  const [sharing, setSharing] = useState(false)
+  const [mainEl, setMainEl] = useState<HTMLElement | null>(null)
   const current = pages.find((p) => p.slug === path) ?? pages[0]
 
-  // keep the URL canonical (e.g. '/' resolves to the first page)
+  // keep the URL canonical (e.g. '/' resolves to the first page) — components
+  // like <Query> derive the page slug from location.pathname
   useEffect(() => {
     if (current && decodeURIComponent(location.pathname.slice(1)) !== current.slug) {
       history.replaceState(null, '', '/' + current.slug)
     }
   }, [current])
-
-  const share = async () => {
-    if (!current) return
-    setSharing(true)
-    try {
-      const page = await (await fetch(`/__editor/page?slug=${encodeURIComponent(current.slug)}`)).json()
-      const roomId = await createRoom(page.source)
-      // mirror the room back into the .tsx file (durability + agents/git see edits)
-      await fetch('/__editor/mirror', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ slug: current.slug, roomId }),
-      })
-      location.href = `/${current.slug}?room=${roomId}` // enter the room (full editor + room bar)
-    } catch (e) {
-      console.error('[share] failed', e)
-      alert(`Share failed — is the relay running on ${RELAY_HTTP}?  (cd react-collab && npm run dev)`)
-      setSharing(false)
-    }
-  }
 
   return (
     <div className="flex h-screen bg-background text-foreground">
@@ -118,28 +71,28 @@ function Workspace() {
         </div>
       </aside>
 
-      <div className="relative flex flex-1 flex-col">
-        {/* top-right row: editor save status (portaled into the slot) + Share */}
-        <div className="fixed right-4 top-4 z-50 flex items-center gap-3">
-          <span id="nb-status-slot" className="flex items-center" />
-          <button
-            onClick={share}
-            disabled={sharing}
-            title="Share this notebook to a live room"
-            className="flex items-center gap-1.5 rounded-full border bg-background/90 px-3 py-1.5 text-xs font-medium shadow-sm backdrop-blur transition-colors hover:bg-accent disabled:opacity-50"
-          >
-            <Share2 className="size-3.5" />
-            {sharing ? 'Sharing…' : 'Share'}
-          </button>
-        </div>
+      <main ref={setMainEl} className="relative flex-1 overflow-y-auto">
         {current ? (
-          <PageEditor slug={current.slug} />
+          <ErrorBoundary resetKey={current.slug}>
+            <Suspense
+              fallback={
+                <div className="px-10 py-12 text-sm text-muted-foreground">Loading page…</div>
+              }
+            >
+              <current.Component />
+            </Suspense>
+            {import.meta.env.DEV && mainEl && (
+              <Suspense fallback={null}>
+                <EditorOverlay key={current.slug} slug={current.slug} main={mainEl} />
+              </Suspense>
+            )}
+          </ErrorBoundary>
         ) : (
           <div className="px-10 py-12 text-sm text-muted-foreground">
             No pages yet. Create one in <code className="font-mono">pages/</code>.
           </div>
         )}
-      </div>
+      </main>
     </div>
   )
 }

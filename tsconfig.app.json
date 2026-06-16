@@ -25,5 +25,5 @@
     "erasableSyntaxOnly": true,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["src", "pages", "components", "metrics", "lib", "packages", "analytics.config.ts"]
+  "include": ["src", "pages", "components", "metrics", "lib", "analytics.config.ts"]
 }
