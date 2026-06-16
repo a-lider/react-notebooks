@@ -9,7 +9,10 @@ import { notebookData } from './vite-plugin-data'
 export default defineConfig({
   plugins: [react(), tailwindcss(), notebookEditor(), notebookData()],
   server: {
-    // share over a tunnel (cloudflared / ngrok): accept the tunnel's hostname
+    // bind 0.0.0.0 so a hosted sandbox (CodeSandbox/Fly/tunnel) can proxy the
+    // dev server's preview — Vite binds localhost only by default
+    host: true,
+    // accept the sandbox/tunnel hostname (CodeSandbox preview, cloudflared, …)
     allowedHosts: true,
     // one tunnel, one origin — proxy the relay (ws + http) under /__relay so a
     // remote peer reaches the relay, the SQL endpoint, and the editor API all
