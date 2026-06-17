@@ -1,5 +1,5 @@
 import { Page, Stat, Columns, Column } from '@/components/notebook'
-import { Trend, DataTable } from '@/components/analytics'
+import { Trend, Query } from '@/components/analytics'
 import { signups, signupConversion, weeklyActiveUsers } from '@/metrics/growth'
 import { week1Retention } from '@/metrics/retention'
 
@@ -25,18 +25,19 @@ export default function GrowthDashboard() {
 
       <h2>Top acquisition channels</h2>
 
-      <DataTable
-        columns={[
-          { key: 'channel', label: 'Channel' },
-          { key: 'signups', label: 'Signups', align: 'right' },
-          { key: 'conversion', label: 'Conversion', align: 'right' },
-        ]}
-        rows={[
-          { channel: 'Organic search', signups: 1842, conversion: '4.1%' },
-          { channel: 'Referral', signups: 967, conversion: '6.8%' },
-          { channel: 'Direct', signups: 743, conversion: '3.2%' },
-          { channel: 'Paid social', signups: 489, conversion: '1.9%' },
-        ]}
+      <Query
+        title="Signups by acquisition source"
+        sql={`SELECT
+  utm_source AS source,
+  COUNT(DISTINCT CASE WHEN event = 'signup' THEN user_id END) AS signups,
+  ROUND(
+    100.0 * COUNT(DISTINCT CASE WHEN event = 'signup' THEN user_id END)
+    / COUNT(DISTINCT CASE WHEN event = '$pageview' AND url = '/' THEN user_id END),
+    1
+  ) AS conversion_pct
+FROM events
+GROUP BY utm_source
+ORDER BY signups DESC`}
       />
     </Page>
   )
